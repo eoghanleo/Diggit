@@ -761,12 +761,64 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         
         log_execution("🤖 LLM Response", f"{word_count} words", stage1_time)
         
-        return (enriched_q, initial_response, snippets, chunk_idxs, paths, 
+        # Format response with safety information first
+        formatted_response = format_response_with_safety(initial_response, safety_snippets, operational_snippets, raw_question)
+        
+        return (enriched_q, formatted_response, snippets, chunk_idxs, paths, 
                 similarities, search_types, False, word_count, retrieval_time)
         
     except Exception as e:
         log_execution("❌ Generation Error", str(e))
         return raw_question, "I'm experiencing technical difficulties. Please try again.", [], [], [], [], [], False, 0, 0
+
+def format_response_with_safety(response: str, safety_snippets: list, operational_snippets: list, question: str) -> str:
+    """Format response with safety information first and attention-grabbing emojis."""
+    # Check if this is the first assistant response (message_counter = 0)
+    is_first_response = st.session_state.message_counter == 0
+    
+    # Determine if we have relevant safety information
+    has_relevant_safety = len(safety_snippets) > 0
+    
+    # Check if question indicates uncertainty or problems
+    uncertainty_keywords = ['wrong', 'problem', 'issue', 'error', 'broken', 'not working', 'trouble', 'help', 'unsure', 'confused', 'what should', 'how do i']
+    question_lower = question.lower()
+    indicates_uncertainty = any(keyword in question_lower for keyword in uncertainty_keywords)
+    
+    formatted_parts = []
+    
+    # Add safety information first if available and relevant
+    if has_relevant_safety and (is_first_response or indicates_uncertainty):
+        # Extract key safety points from safety snippets
+        safety_points = []
+        for snippet in safety_snippets:
+            # Look for safety-related sentences
+            sentences = snippet.split('.')
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if any(keyword in sentence.lower() for keyword in ['safety', 'danger', 'hazard', 'warning', 'caution', 'emergency', 'stop', 'protective']):
+                    if len(sentence) > 20:  # Only meaningful sentences
+                        safety_points.append(sentence)
+                        if len(safety_points) >= 2:  # Limit to 2 key safety points
+                            break
+            if len(safety_points) >= 2:
+                break
+        
+        if safety_points:
+            formatted_parts.append("🛡️ **SAFETY FIRST:**")
+            for point in safety_points:
+                formatted_parts.append(f"⚠️ {point}.")
+            formatted_parts.append("")  # Empty line for spacing
+    
+    # Add general safety warning if no specific safety info but uncertainty indicated
+    elif indicates_uncertainty and not has_relevant_safety:
+        formatted_parts.append("🛡️ **SAFETY REMINDER:**")
+        formatted_parts.append("⚠️ If you're unsure about equipment operation or experiencing issues, stop work immediately and contact your supervisor or safety officer.")
+        formatted_parts.append("")  # Empty line for spacing
+    
+    # Add the main response
+    formatted_parts.append(response)
+    
+    return "\n".join(formatted_parts)
 
 # ——— Stream Response ———
 def stream_response(response: str, placeholder):
