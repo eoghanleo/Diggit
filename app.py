@@ -892,61 +892,10 @@ def main():
         
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            st.markdown("#### Select Equipment Type")
-            
-            # Common equipment categories with IDs
-            equipment_options = {
-                "Excavators & Diggers": [
-                    ("Mini Excavator (1.5T)", 1001),
-                    ("Midi Excavator (5T)", 1002),
-                    ("Large Excavator (20T)", 1003),
-                    ("Wheeled Excavator", 1004)
-                ],
-                "Loaders": [
-                    ("Skid Steer Loader", 2001),
-                    ("Compact Track Loader", 2002),
-                    ("Wheel Loader", 2003),
-                    ("Backhoe Loader", 2004)
-                ],
-                "Compaction Equipment": [
-                    ("Vibratory Roller", 3001),
-                    ("Tandem Roller", 3002),
-                    ("Plate Compactor", 3003),
-                    ("Jumping Jack", 3004)
-                ],
-                "Lifting Equipment": [
-                    ("Mobile Crane", 4001),
-                    ("Tower Crane", 4002),
-                    ("Telehandler", 4003),
-                    ("Scissor Lift", 4004)
-                ],
-                "Other Equipment": [
-                    ("Bulldozer", 5001),
-                    ("Dump Truck", 5002),
-                    ("Concrete Mixer", 5003),
-                    ("Generator", 5004)
-                ]
-            }
-            
-            # Display equipment selection
-            for category, equipment_list in equipment_options.items():
-                st.markdown(f"**{category}**")
-                cols = st.columns(2)
-                for idx, (name, eq_id) in enumerate(equipment_list):
-                    with cols[idx % 2]:
-                        if st.button(f"🔧 {name}", key=f"eq_{eq_id}", use_container_width=True):
-                            st.session_state.property_id = eq_id
-                            # Start new conversation
-                            if st.session_state.config['enable_logging']:
-                                st.session_state.conversation_id = conversation_logger.start_conversation(
-                                    eq_id, st.session_state.session_id
-                                )
-                            st.rerun()
+            st.markdown("#### Enter Equipment ID")
             
             # Manual entry option
-            st.markdown("---")
-            st.markdown("**Or enter equipment ID manually:**")
-            manual_id = st.text_input("Equipment ID", placeholder="e.g., 1001")
+            manual_id = st.text_input("Equipment ID", placeholder="e.g., 2", value="2")
             if st.button("Connect to Equipment", type="primary", disabled=not manual_id):
                 try:
                     eq_id = int(manual_id)
