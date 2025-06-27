@@ -788,25 +788,11 @@ def format_response_with_safety(response: str, safety_snippets: list, operationa
     
     # Add safety information first if available and relevant
     if has_relevant_safety and (is_first_response or indicates_uncertainty):
-        # Extract key safety points from safety snippets
-        safety_points = []
-        for snippet in safety_snippets:
-            # Look for safety-related sentences
-            sentences = snippet.split('.')
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if any(keyword in sentence.lower() for keyword in ['safety', 'danger', 'hazard', 'warning', 'caution', 'emergency', 'stop', 'protective']):
-                    if len(sentence) > 20:  # Only meaningful sentences
-                        safety_points.append(sentence)
-                        if len(safety_points) >= 2:  # Limit to 2 key safety points
-                            break
-            if len(safety_points) >= 2:
-                break
-        
-        if safety_points:
+        # Process safety information through separate LLM call
+        processed_safety = process_safety_information(safety_snippets, question)
+        if processed_safety:
             formatted_parts.append("🛡️ **SAFETY FIRST:**")
-            for point in safety_points:
-                formatted_parts.append(f"⚠️ {point}.")
+            formatted_parts.append(processed_safety)
             formatted_parts.append("")  # Empty line for spacing
     
     # Add general safety warning if no specific safety info but uncertainty indicated
@@ -819,6 +805,104 @@ def format_response_with_safety(response: str, safety_snippets: list, operationa
     formatted_parts.append(response)
     
     return "\n".join(formatted_parts)
+
+def process_safety_information(safety_snippets: list, question: str) -> str:
+    """Process safety information through LLM to extract relevant safety points."""
+    try:
+        # Combine safety snippets
+        safety_content = "\n\n".join(safety_snippets)
+        
+        # Create focused system prompt for safety processing
+        safety_system_prompt = """You are a safety expert for construction equipment. Your task is to extract ONLY relevant safety information from the provided content.
+
+IMPORTANT RULES:
+1. Extract ONLY safety-related information (warnings, hazards, protective measures, emergency procedures)
+2. IGNORE: warranty information, addresses, contact details, administrative procedures
+3. Focus on: operational safety, personal protective equipment, hazard warnings, emergency procedures
+4. Keep each safety point concise (1-2 sentences max)
+5. Use clear, direct language
+6. Maximum 3 safety points total
+
+Format your response as bullet points with ⚠️ emoji, like:
+⚠️ [Safety point 1]
+⚠️ [Safety point 2]
+⚠️ [Safety point 3]
+
+If no relevant safety information is found, respond with "No relevant safety information found.""""
+
+        # Create user prompt with context
+        safety_user_prompt = f"""Question: {question}
+
+Safety Content:
+{safety_content}
+
+Extract only the safety information that is relevant to the question or general equipment safety."""
+
+        # Try Groq first
+        use_groq = st.session_state.config.get('use_groq', True)
+        if use_groq and groq_client:
+            try:
+                messages = [
+                    {"role": "system", "content": safety_system_prompt},
+                    {"role": "user", "content": safety_user_prompt}
+                ]
+                
+                completion = groq_client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=messages,
+                    temperature=0.1,  # Lower temperature for more focused extraction
+                    max_tokens=150,
+                    top_p=0.9,
+                    stream=False
+                )
+                
+                safety_response = completion.choices[0].message.content.strip()
+                log_execution("🛡️ Safety Processing", f"Groq safety extraction completed")
+                
+            except Exception as e:
+                # Fallback to Cortex
+                log_execution("⚠️ Safety processing Groq failed, using Cortex", str(e))
+                safety_response = process_safety_with_cortex(safety_system_prompt, safety_user_prompt)
+        else:
+            # Use Cortex directly
+            safety_response = process_safety_with_cortex(safety_system_prompt, safety_user_prompt)
+        
+        # Clean up response
+        if safety_response and safety_response.lower() != "no relevant safety information found.":
+            return safety_response
+        else:
+            return ""
+            
+    except Exception as e:
+        log_execution("❌ Safety processing error", str(e))
+        return ""
+
+def process_safety_with_cortex(system_prompt: str, user_prompt: str) -> str:
+    """Process safety information using Cortex as fallback."""
+    try:
+        # Switch to CORTEX_WH for LLM generation
+        session.sql("USE WAREHOUSE CORTEX_WH").collect()
+        
+        full_prompt = f"{system_prompt}\n\n{user_prompt}"
+        
+        df = session.sql(
+            "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
+            params=[FALLBACK_MODEL, full_prompt]
+        ).collect()
+        
+        safety_response = df[0].RESPONSE.strip() if df else ""
+        log_execution("🛡️ Safety Processing", f"Cortex safety extraction completed")
+        
+        # Switch back to RETRIEVAL warehouse
+        session.sql("USE WAREHOUSE RETRIEVAL").collect()
+        
+        return safety_response
+        
+    except Exception as e:
+        log_execution("❌ Cortex safety processing error", str(e))
+        # Switch back to RETRIEVAL warehouse
+        session.sql("USE WAREHOUSE RETRIEVAL").collect()
+        return ""
 
 # ——— Stream Response ———
 def stream_response(response: str, placeholder):
