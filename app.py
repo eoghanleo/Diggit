@@ -813,22 +813,7 @@ def process_safety_information(safety_snippets: list, question: str) -> str:
         safety_content = "\n\n".join(safety_snippets)
         
         # Create focused system prompt for safety processing
-        safety_system_prompt = """You are a safety expert for construction equipment. Your task is to extract ONLY relevant safety information from the provided content.
-
-IMPORTANT RULES:
-1. Extract ONLY safety-related information (warnings, hazards, protective measures, emergency procedures)
-2. IGNORE: warranty information, addresses, contact details, administrative procedures
-3. Focus on: operational safety, personal protective equipment, hazard warnings, emergency procedures
-4. Keep each safety point concise (1-2 sentences max)
-5. Use clear, direct language
-6. Maximum 3 safety points total
-
-Format your response as bullet points with ⚠️ emoji, like:
-⚠️ [Safety point 1]
-⚠️ [Safety point 2]
-⚠️ [Safety point 3]
-
-If no relevant safety information is found, respond with "No relevant safety information found.""""
+        safety_system_prompt = "You are a safety expert for construction equipment. Your task is to extract ONLY relevant safety information from the provided content.\n\nIMPORTANT RULES:\n1. Extract ONLY safety-related information (warnings, hazards, protective measures, emergency procedures)\n2. IGNORE: warranty information, addresses, contact details, administrative procedures\n3. Focus on: operational safety, personal protective equipment, hazard warnings, emergency procedures\n4. Keep each safety point concise (1-2 sentences max)\n5. Use clear, direct language\n6. Maximum 3 safety points total\n\nFormat your response as bullet points with ⚠️ emoji, like:\n⚠️ [Safety point 1]\n⚠️ [Safety point 2]\n⚠️ [Safety point 3]\n\nIf no relevant safety information is found, respond with \"No relevant safety information found.\""
 
         # Create user prompt with context
         safety_user_prompt = f"""Question: {question}
