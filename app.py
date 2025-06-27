@@ -351,8 +351,7 @@ def get_system_prompt(property_id: int) -> str:
                 "format": "plain text only",
                 "length_limit": f"max {st.session_state.config['max_response_words']} words",
                 "no_hallucination": "Only use information from the provided context",
-                "safety_first": "Always prioritize safety information when relevant",
-                "formatting": "Always format lists as bullet points with * or - symbols, and use proper line breaks for readability"
+                "safety_first": "Always prioritize safety information when relevant"
             }
         }
     })
@@ -708,7 +707,7 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
             try:
                 # Convert prompt to Groq format
                 messages = [
-                    {"role": "system", "content": "You are a helpful, knowledgeable plant hire equipment expert. Answer only the most recent equipment inquiry using the provided information. Keep responses clear and professional, prioritize safety information when relevant, max 100 words. IMPORTANT: Always format lists as bullet points with * symbols and use proper line breaks for readability."},
+                    {"role": "system", "content": "You are a helpful, knowledgeable plant hire equipment expert. Answer only the most recent equipment inquiry using the provided information. Keep responses clear and professional, prioritize safety information when relevant, max 100 words."},
                     {"role": "user", "content": f"Equipment Operator: {raw_question}\n\n{context_section}\n\nBased on the equipment information above, please answer the operator's question."}
                 ]
                 
@@ -762,204 +761,55 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         
         log_execution("🤖 LLM Response", f"{word_count} words", stage1_time)
         
-        # Format response with safety information first
-        formatted_response = format_response_with_safety(initial_response, safety_snippets, operational_snippets, raw_question)
-        
-        return (enriched_q, formatted_response, snippets, chunk_idxs, paths, 
+        return (enriched_q, initial_response, snippets, chunk_idxs, paths, 
                 similarities, search_types, False, word_count, retrieval_time)
         
     except Exception as e:
         log_execution("❌ Generation Error", str(e))
         return raw_question, "I'm experiencing technical difficulties. Please try again.", [], [], [], [], [], False, 0, 0
 
-def format_main_response(response: str) -> str:
-    """Format main response to ensure proper bullet points and line breaks."""
-    # Look for patterns that indicate lists and convert them to bullet points
-    lines = response.split('\n')
-    formatted_lines = []
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            formatted_lines.append('')
-            continue
-            
-        # Check if line contains list indicators
-        if re.match(r'^\d+\.', line):  # Numbered list
-            # Convert to bullet point
-            line = re.sub(r'^\d+\.\s*', '* ', line)
-        elif re.match(r'^\*', line):  # Already bullet point
-            pass  # Keep as is
-        elif re.match(r'^-', line):  # Dash list
-            line = re.sub(r'^-\s*', '* ', line)
-        elif ':' in line and any(keyword in line.lower() for keyword in ['include', 'possible', 'causes', 'reasons', 'steps', 'check']):
-            # This might be a list header, keep as is
-            pass
-        else:
-            # Check if this line contains multiple items separated by common patterns
-            if any(separator in line for separator in ['•', '·', '▪', '▫']):
-                # Replace bullet-like characters with standard *
-                line = re.sub(r'[•·▪▫]\s*', '* ', line)
-        
-        formatted_lines.append(line)
-    
-    return '\n'.join(formatted_lines)
-
-def format_response_with_safety(response: str, safety_snippets: list, operational_snippets: list, question: str) -> str:
-    """Format response with safety information first and attention-grabbing emojis."""
-    # Check if this is the first assistant response (message_counter = 0)
-    is_first_response = st.session_state.message_counter == 0
-    
-    # Determine if we have relevant safety information
-    has_relevant_safety = len(safety_snippets) > 0
-    
-    # Check if question indicates uncertainty or problems
-    uncertainty_keywords = ['wrong', 'problem', 'issue', 'error', 'broken', 'not working', 'trouble', 'help', 'unsure', 'confused', 'what should', 'how do i']
-    question_lower = question.lower()
-    indicates_uncertainty = any(keyword in question_lower for keyword in uncertainty_keywords)
-    
-    formatted_parts = []
-    
-    # Add safety information first if available and relevant
-    if has_relevant_safety and (is_first_response or indicates_uncertainty):
-        # Process safety information through separate LLM call
-        processed_safety = process_safety_information(safety_snippets, question)
-        if processed_safety:
-            formatted_parts.append("🛡️ **SAFETY FIRST:**")
-            formatted_parts.append(processed_safety)
-            formatted_parts.append("")  # Empty line for spacing
-    
-    # Add general safety warning if no specific safety info but uncertainty indicated
-    elif indicates_uncertainty and not has_relevant_safety:
-        formatted_parts.append("🛡️ **SAFETY REMINDER:**")
-        formatted_parts.append("⚠️ If you're unsure about equipment operation or experiencing issues, stop work immediately and contact your supervisor or safety officer.")
-        formatted_parts.append("")  # Empty line for spacing
-    
-    # Add the main response
-    formatted_parts.append(format_main_response(response))
-    
-    return "\n".join(formatted_parts)
-
-def process_safety_information(safety_snippets: list, question: str) -> str:
-    """Process safety information through LLM to extract relevant safety points."""
-    try:
-        # Combine safety snippets
-        safety_content = "\n\n".join(safety_snippets)
-        
-        # Create focused system prompt for safety processing
-        safety_system_prompt = "You are a safety expert for construction equipment. Your task is to extract ONLY relevant safety information from the provided content.\n\nIMPORTANT RULES:\n1. Extract ONLY safety-related information (warnings, hazards, protective measures, emergency procedures)\n2. IGNORE: warranty information, addresses, contact details, administrative procedures\n3. Focus on: operational safety, personal protective equipment, hazard warnings, emergency procedures\n4. Keep each safety point concise (1-2 sentences max)\n5. Use clear, direct language\n6. Maximum 3 safety points total\n\nFormat your response as bullet points with ⚠️ emoji, like:\n⚠️ [Safety point 1]\n⚠️ [Safety point 2]\n⚠️ [Safety point 3]\n\nIf no relevant safety information is found, respond with \"No relevant safety information found.\""
-
-        # Create user prompt with context
-        safety_user_prompt = f"""Question: {question}
-
-Safety Content:
-{safety_content}
-
-Extract only the safety information that is relevant to the question or general equipment safety."""
-
-        # Try Groq first
-        use_groq = st.session_state.config.get('use_groq', True)
-        if use_groq and groq_client:
-            try:
-                messages = [
-                    {"role": "system", "content": safety_system_prompt},
-                    {"role": "user", "content": safety_user_prompt}
-                ]
-                
-                completion = groq_client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    temperature=0.1,  # Lower temperature for more focused extraction
-                    max_tokens=150,
-                    top_p=0.9,
-                    stream=False
-                )
-                
-                safety_response = completion.choices[0].message.content.strip()
-                log_execution("🛡️ Safety Processing", f"Groq safety extraction completed")
-                
-            except Exception as e:
-                # Fallback to Cortex
-                log_execution("⚠️ Safety processing Groq failed, using Cortex", str(e))
-                safety_response = process_safety_with_cortex(safety_system_prompt, safety_user_prompt)
-        else:
-            # Use Cortex directly
-            safety_response = process_safety_with_cortex(safety_system_prompt, safety_user_prompt)
-        
-        # Clean up response
-        if safety_response and safety_response.lower() != "no relevant safety information found.":
-            # Ensure proper formatting with line breaks
-            formatted_safety = format_safety_response(safety_response)
-            return formatted_safety
-        else:
-            return ""
-            
-    except Exception as e:
-        log_execution("❌ Safety processing error", str(e))
-        return ""
-
-def process_safety_with_cortex(system_prompt: str, user_prompt: str) -> str:
-    """Process safety information using Cortex as fallback."""
-    try:
-        # Switch to CORTEX_WH for LLM generation
-        session.sql("USE WAREHOUSE CORTEX_WH").collect()
-        
-        full_prompt = f"{system_prompt}\n\n{user_prompt}"
-        
-        df = session.sql(
-            "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
-            params=[FALLBACK_MODEL, full_prompt]
-        ).collect()
-        
-        safety_response = df[0].RESPONSE.strip() if df else ""
-        log_execution("🛡️ Safety Processing", f"Cortex safety extraction completed")
-        
-        # Switch back to RETRIEVAL warehouse
-        session.sql("USE WAREHOUSE RETRIEVAL").collect()
-        
-        return safety_response
-        
-    except Exception as e:
-        log_execution("❌ Cortex safety processing error", str(e))
-        # Switch back to RETRIEVAL warehouse
-        session.sql("USE WAREHOUSE RETRIEVAL").collect()
-        return ""
-
-def format_safety_response(safety_response: str) -> str:
-    """Format safety response with proper line breaks and indentation."""
-    # Split by lines and clean up
-    lines = safety_response.strip().split('\n')
-    formatted_lines = []
-    
-    for line in lines:
-        line = line.strip()
-        if line:
-            # If line starts with ⚠️, keep it as is
-            if line.startswith('⚠️'):
-                formatted_lines.append(line)
-            # If line doesn't start with ⚠️ but contains safety content, add ⚠️
-            elif any(keyword in line.lower() for keyword in ['safety', 'danger', 'hazard', 'warning', 'caution', 'emergency', 'protective']):
-                formatted_lines.append(f"⚠️ {line}")
-            # Otherwise, skip non-safety lines
-            else:
-                continue
-    
-    # Join with proper line breaks
-    return '\n'.join(formatted_lines)
-
 # ——— Stream Response ———
 def stream_response(response: str, placeholder):
-    """Simulate streaming for better UX."""
-    words = response.split()
-    streamed = []
+    """Simulate streaming for better UX while preserving formatting."""
+    # Split by lines first to preserve line breaks
+    lines = response.split('\n')
+    accumulated_content = []
     
-    for i, word in enumerate(words):
-        streamed.append(word)
-        if i < len(words) - 1:
-            placeholder.write(' '.join(streamed) + " ▌")
-        else:
-            placeholder.write(' '.join(streamed))
-        time.sleep(0.02)
+    for line_idx, line in enumerate(lines):
+        if line_idx > 0:
+            # Add the line break from previous line
+            accumulated_content.append('\n')
+        
+        # Handle empty lines
+        if not line.strip():
+            # For empty lines, just update with accumulated content
+            formatted_output = ''.join(accumulated_content)
+            placeholder.markdown(formatted_output + " ▌")
+            continue
+        
+        # Split line into words
+        words = line.split()
+        
+        for word_idx, word in enumerate(words):
+            accumulated_content.append(word)
+            
+            # Add space after word (except for last word in line)
+            if word_idx < len(words) - 1:
+                accumulated_content.append(' ')
+            
+            # Update display
+            formatted_output = ''.join(accumulated_content)
+            
+            # Show cursor except at the very end
+            if line_idx < len(lines) - 1 or word_idx < len(words) - 1:
+                placeholder.markdown(formatted_output + " ▌")
+            else:
+                placeholder.markdown(formatted_output)
+            
+            time.sleep(0.02)
+    
+    # Final update without cursor
+    placeholder.markdown(response)
 
 # ——— Main App ———
 def main():
@@ -1071,10 +921,61 @@ def main():
         
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            st.markdown("#### Enter Equipment ID")
+            st.markdown("#### Select Equipment Type")
+            
+            # Common equipment categories with IDs
+            equipment_options = {
+                "Excavators & Diggers": [
+                    ("Mini Excavator (1.5T)", 1001),
+                    ("Midi Excavator (5T)", 1002),
+                    ("Large Excavator (20T)", 1003),
+                    ("Wheeled Excavator", 1004)
+                ],
+                "Loaders": [
+                    ("Skid Steer Loader", 2001),
+                    ("Compact Track Loader", 2002),
+                    ("Wheel Loader", 2003),
+                    ("Backhoe Loader", 2004)
+                ],
+                "Compaction Equipment": [
+                    ("Vibratory Roller", 3001),
+                    ("Tandem Roller", 3002),
+                    ("Plate Compactor", 3003),
+                    ("Jumping Jack", 3004)
+                ],
+                "Lifting Equipment": [
+                    ("Mobile Crane", 4001),
+                    ("Tower Crane", 4002),
+                    ("Telehandler", 4003),
+                    ("Scissor Lift", 4004)
+                ],
+                "Other Equipment": [
+                    ("Bulldozer", 5001),
+                    ("Dump Truck", 5002),
+                    ("Concrete Mixer", 5003),
+                    ("Generator", 5004)
+                ]
+            }
+            
+            # Display equipment selection
+            for category, equipment_list in equipment_options.items():
+                st.markdown(f"**{category}**")
+                cols = st.columns(2)
+                for idx, (name, eq_id) in enumerate(equipment_list):
+                    with cols[idx % 2]:
+                        if st.button(f"🔧 {name}", key=f"eq_{eq_id}", use_container_width=True):
+                            st.session_state.property_id = eq_id
+                            # Start new conversation
+                            if st.session_state.config['enable_logging']:
+                                st.session_state.conversation_id = conversation_logger.start_conversation(
+                                    eq_id, st.session_state.session_id
+                                )
+                            st.rerun()
             
             # Manual entry option
-            manual_id = st.text_input("Equipment ID", placeholder="e.g., 2", value="2")
+            st.markdown("---")
+            st.markdown("**Or enter equipment ID manually:**")
+            manual_id = st.text_input("Equipment ID", placeholder="e.g., 1001")
             if st.button("Connect to Equipment", type="primary", disabled=not manual_id):
                 try:
                     eq_id = int(manual_id)
@@ -1111,14 +1012,14 @@ def main():
         # Display chat history
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
-                st.write(msg["content"])
+                st.markdown(msg["content"])
         
         # Chat input
         if prompt := st.chat_input("Ask about your equipment..."):
             # Add user message
             st.session_state.chat_history.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
-                st.write(prompt)
+                st.markdown(prompt)
             
             # Generate response
             with st.chat_message("assistant"):
@@ -1194,6 +1095,32 @@ def main():
                         'used_refinement': used_refinement,
                         'word_count': word_count
                     })
+                    
+                    # Show debug info if enabled
+                    if st.checkbox("Show retrieval details", key=f"debug_{st.session_state.message_counter}"):
+                        with st.expander("🔍 Retrieval Information"):
+                            st.write(f"**Enriched Query:** {enriched_q}")
+                            st.write(f"**Retrieved {len(snippets)} chunks**")
+                            
+                            # Show safety information first
+                            safety_count = sum(1 for st in search_types if st in ['safety', 'safety_keyword'])
+                            if safety_count > 0:
+                                st.write(f"**🛡️ Safety Information ({safety_count} chunks)**")
+                                for i, (snippet, sim, stype) in enumerate(zip(snippets, similarities, search_types)):
+                                    if stype in ['safety', 'safety_keyword']:
+                                        st.write(f"- [{stype}] (similarity: {sim:.3f})")
+                                        st.text(snippet[:200] + "..." if len(snippet) > 200 else snippet)
+                            
+                            # Show operational information
+                            op_count = sum(1 for st in search_types if st in ['operational', 'keyword'])
+                            if op_count > 0:
+                                st.write(f"**🔧 Operational Information ({op_count} chunks)**")
+                                for i, (snippet, sim, stype) in enumerate(zip(snippets, similarities, search_types)):
+                                    if stype in ['operational', 'keyword']:
+                                        st.write(f"- [{stype}] (similarity: {sim:.3f})")
+                                        st.text(snippet[:200] + "..." if len(snippet) > 200 else snippet)
+                            
+                            st.write(f"**⏱️ Timing:** Retrieval: {retrieval_time:.2f}s, Total: {total_time:.2f}s")
                 
                 except Exception as e:
                     error = ChatError(
