@@ -351,7 +351,8 @@ def get_system_prompt(property_id: int) -> str:
                 "format": "plain text only",
                 "length_limit": f"max {st.session_state.config['max_response_words']} words",
                 "no_hallucination": "Only use information from the provided context",
-                "safety_first": "Always prioritize safety information when relevant"
+                "safety_first": "Always prioritize safety information when relevant",
+                "formatting": "Always format lists as bullet points with * or - symbols, and use proper line breaks for readability"
             }
         }
     })
@@ -707,7 +708,7 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
             try:
                 # Convert prompt to Groq format
                 messages = [
-                    {"role": "system", "content": "You are a helpful, knowledgeable plant hire equipment expert. Answer only the most recent equipment inquiry using the provided information. Keep responses clear and professional, prioritize safety information when relevant, max 100 words."},
+                    {"role": "system", "content": "You are a helpful, knowledgeable plant hire equipment expert. Answer only the most recent equipment inquiry using the provided information. Keep responses clear and professional, prioritize safety information when relevant, max 100 words. IMPORTANT: Always format lists as bullet points with * symbols and use proper line breaks for readability."},
                     {"role": "user", "content": f"Equipment Operator: {raw_question}\n\n{context_section}\n\nBased on the equipment information above, please answer the operator's question."}
                 ]
                 
@@ -771,6 +772,39 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         log_execution("❌ Generation Error", str(e))
         return raw_question, "I'm experiencing technical difficulties. Please try again.", [], [], [], [], [], False, 0, 0
 
+def format_main_response(response: str) -> str:
+    """Format main response to ensure proper bullet points and line breaks."""
+    # Look for patterns that indicate lists and convert them to bullet points
+    lines = response.split('\n')
+    formatted_lines = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            formatted_lines.append('')
+            continue
+            
+        # Check if line contains list indicators
+        if re.match(r'^\d+\.', line):  # Numbered list
+            # Convert to bullet point
+            line = re.sub(r'^\d+\.\s*', '* ', line)
+        elif re.match(r'^\*', line):  # Already bullet point
+            pass  # Keep as is
+        elif re.match(r'^-', line):  # Dash list
+            line = re.sub(r'^-\s*', '* ', line)
+        elif ':' in line and any(keyword in line.lower() for keyword in ['include', 'possible', 'causes', 'reasons', 'steps', 'check']):
+            # This might be a list header, keep as is
+            pass
+        else:
+            # Check if this line contains multiple items separated by common patterns
+            if any(separator in line for separator in ['•', '·', '▪', '▫']):
+                # Replace bullet-like characters with standard *
+                line = re.sub(r'[•·▪▫]\s*', '* ', line)
+        
+        formatted_lines.append(line)
+    
+    return '\n'.join(formatted_lines)
+
 def format_response_with_safety(response: str, safety_snippets: list, operational_snippets: list, question: str) -> str:
     """Format response with safety information first and attention-grabbing emojis."""
     # Check if this is the first assistant response (message_counter = 0)
@@ -802,7 +836,7 @@ def format_response_with_safety(response: str, safety_snippets: list, operationa
         formatted_parts.append("")  # Empty line for spacing
     
     # Add the main response
-    formatted_parts.append(response)
+    formatted_parts.append(format_main_response(response))
     
     return "\n".join(formatted_parts)
 
