@@ -233,7 +233,7 @@ SIMILARITY_THRESHOLD = 0.2  # Fixed value, no longer configurable
 # ——— Configuration ———
 if 'config' not in st.session_state:
     st.session_state.config = {
-        'max_response_words': 100,
+        'max_response_words': 300,  # Increased from 100 to 300
         'context_window': 4,
         'enable_logging': True,
         'use_groq': True
@@ -708,7 +708,7 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
             try:
                 # Convert prompt to Groq format
                 messages = [
-                    {"role": "system", "content": "You are a helpful, knowledgeable plant hire equipment expert. Answer only the most recent equipment inquiry using the provided information. Keep responses clear and professional, prioritize safety information when relevant, max 100 words. IMPORTANT: Always format lists as bullet points with * symbols and use proper line breaks for readability."},
+                    {"role": "system", "content": "You are a helpful, knowledgeable plant hire equipment expert. Answer only the most recent equipment inquiry using the provided information. Keep responses clear and professional, prioritize safety information when relevant, max 300 words. IMPORTANT: Always format lists as bullet points with * symbols and use proper line breaks for readability."},
                     {"role": "user", "content": f"Equipment Operator: {raw_question}\n\n{context_section}\n\nBased on the equipment information above, please answer the operator's question."}
                 ]
                 
@@ -717,7 +717,7 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
                     model=MODEL_NAME,
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=200,
+                    max_tokens=500,
                     top_p=0.9,
                     stream=False
                 )
@@ -870,7 +870,7 @@ Extract only the safety information that is relevant to the question or general 
                     model=MODEL_NAME,
                     messages=messages,
                     temperature=0.1,  # Lower temperature for more focused extraction
-                    max_tokens=150,
+                    max_tokens=300,  # Increased from 150 to 300
                     top_p=0.9,
                     stream=False
                 )
