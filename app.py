@@ -1136,32 +1136,6 @@ def main():
                         'used_refinement': used_refinement,
                         'word_count': word_count
                     })
-                    
-                    # Show debug info if enabled
-                    if st.checkbox("Show retrieval details", key=f"debug_{st.session_state.message_counter}"):
-                        with st.expander("🔍 Retrieval Information"):
-                            st.write(f"**Enriched Query:** {enriched_q}")
-                            st.write(f"**Retrieved {len(snippets)} chunks**")
-                            
-                            # Show safety information first
-                            safety_count = sum(1 for st in search_types if st in ['safety', 'safety_keyword'])
-                            if safety_count > 0:
-                                st.write(f"**🛡️ Safety Information ({safety_count} chunks)**")
-                                for i, (snippet, sim, stype) in enumerate(zip(snippets, similarities, search_types)):
-                                    if stype in ['safety', 'safety_keyword']:
-                                        st.write(f"- [{stype}] (similarity: {sim:.3f})")
-                                        st.text(snippet[:200] + "..." if len(snippet) > 200 else snippet)
-                            
-                            # Show operational information
-                            op_count = sum(1 for st in search_types if st in ['operational', 'keyword'])
-                            if op_count > 0:
-                                st.write(f"**🔧 Operational Information ({op_count} chunks)**")
-                                for i, (snippet, sim, stype) in enumerate(zip(snippets, similarities, search_types)):
-                                    if stype in ['operational', 'keyword']:
-                                        st.write(f"- [{stype}] (similarity: {sim:.3f})")
-                                        st.text(snippet[:200] + "..." if len(snippet) > 200 else snippet)
-                            
-                            st.write(f"**⏱️ Timing:** Retrieval: {retrieval_time:.2f}s, Total: {total_time:.2f}s")
                 
                 except Exception as e:
                     error = ChatError(
