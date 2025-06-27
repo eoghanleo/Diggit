@@ -854,7 +854,9 @@ Extract only the safety information that is relevant to the question or general 
         
         # Clean up response
         if safety_response and safety_response.lower() != "no relevant safety information found.":
-            return safety_response
+            # Ensure proper formatting with line breaks
+            formatted_safety = format_safety_response(safety_response)
+            return formatted_safety
         else:
             return ""
             
@@ -888,6 +890,28 @@ def process_safety_with_cortex(system_prompt: str, user_prompt: str) -> str:
         # Switch back to RETRIEVAL warehouse
         session.sql("USE WAREHOUSE RETRIEVAL").collect()
         return ""
+
+def format_safety_response(safety_response: str) -> str:
+    """Format safety response with proper line breaks and indentation."""
+    # Split by lines and clean up
+    lines = safety_response.strip().split('\n')
+    formatted_lines = []
+    
+    for line in lines:
+        line = line.strip()
+        if line:
+            # If line starts with ⚠️, keep it as is
+            if line.startswith('⚠️'):
+                formatted_lines.append(line)
+            # If line doesn't start with ⚠️ but contains safety content, add ⚠️
+            elif any(keyword in line.lower() for keyword in ['safety', 'danger', 'hazard', 'warning', 'caution', 'emergency', 'protective']):
+                formatted_lines.append(f"⚠️ {line}")
+            # Otherwise, skip non-safety lines
+            else:
+                continue
+    
+    # Join with proper line breaks
+    return '\n'.join(formatted_lines)
 
 # ——— Stream Response ———
 def stream_response(response: str, placeholder):
