@@ -1012,6 +1012,90 @@ def main():
         if st.session_state.property_id:
             st.info(f"🚜 Equipment #{st.session_state.property_id}")
         
+        # Last Query Performance (New section)
+        if st.session_state.last_query_info:
+            with st.expander("⏱️ Last Query Performance", expanded=True):
+                timing = st.session_state.last_query_info['timing']
+                
+                # Display timing metrics
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("📥 Retrieval Time", f"{timing['retrieval']:.2f}s")
+                with col2:
+                    st.metric("🤖 LLM Time", f"{timing.get('llm_time', timing['total'] - timing['retrieval']):.2f}s")
+                
+                st.metric("⏱️ Total Response Time", f"{timing['total']:.2f}s")
+                
+                # Model used
+                if 'model_used' in timing:
+                    st.info(f"🔧 Model: {timing['model_used']}")
+        
+        # Retrieved Chunks (New section)
+        if st.session_state.last_query_info and st.session_state.last_query_info.get('snippets'):
+            with st.expander("📄 Retrieved Chunks", expanded=True):
+                snippets = st.session_state.last_query_info['snippets']
+                similarities = st.session_state.last_query_info['similarities']
+                search_types = st.session_state.last_query_info['search_types']
+                paths = st.session_state.last_query_info['paths']
+                
+                for i, (snippet, sim, search_type, path) in enumerate(zip(snippets, similarities, search_types, paths)):
+                    # Color code by search type
+                    if search_type in ['safety', 'safety_keyword']:
+                        st.markdown(f"**🛡️ Chunk {i+1} - Safety ({search_type})**")
+                        color = "#ff6b6b"  # Red for safety
+                    else:
+                        st.markdown(f"**🔧 Chunk {i+1} - Operational ({search_type})**")
+                        color = "#4ecdc4"  # Teal for operational
+                    
+                    # Show similarity score with color
+                    st.markdown(f"<span style='color: {color}'>Score: {sim:.3f}</span>", unsafe_allow_html=True)
+                    
+                    # Show source file
+                    st.text(f"📁 {path}")
+                    
+                    # Show snippet preview (truncated)
+                    preview = snippet[:150] + "..." if len(snippet) > 150 else snippet
+                    st.text_area(f"Content {i+1}", preview, height=80, key=f"chunk_{i}")
+                    st.divider()
+        
+        # Execution Log (Improved)
+        with st.expander("🐛 Execution Log", expanded=False):
+            if st.button("Clear Logs"):
+                st.session_state.execution_log = []
+                st.rerun()
+            
+            if st.session_state.execution_log:
+                # Display logs in reverse chronological order
+                for log in reversed(st.session_state.execution_log[-20:]):  # Show last 20 logs
+                    # Format log entry with better styling
+                    time_str = f"[{log['timestamp']}]"
+                    step_str = log['step']
+                    
+                    # Color code different types of logs
+                    if "✅" in step_str:
+                        color = "green"
+                    elif "❌" in step_str:
+                        color = "red"
+                    elif "⚠️" in step_str:
+                        color = "orange"
+                    elif "🔧" in step_str or "🛡️" in step_str:
+                        color = "blue"
+                    else:
+                        color = "gray"
+                    
+                    # Display main log line
+                    log_line = f"{time_str} {step_str}"
+                    if log['timing']:
+                        log_line += f" ({log['timing']})"
+                    
+                    st.markdown(f"<span style='color: {color}; font-family: monospace; font-size: 0.85em'>{log_line}</span>", unsafe_allow_html=True)
+                    
+                    # Display details if present
+                    if log['details']:
+                        st.markdown(f"<span style='color: gray; font-family: monospace; font-size: 0.8em; margin-left: 20px'>└─ {log['details']}</span>", unsafe_allow_html=True)
+            else:
+                st.text("No logs yet")
+        
         # Configuration section
         with st.expander("⚙️ Settings", expanded=False):
             st.session_state.config['enable_logging'] = st.checkbox(
@@ -1025,36 +1109,23 @@ def main():
                 help="When enabled, uses Groq API for faster responses. Falls back to Cortex if unavailable."
             )
         
-        # Performance metrics
-        with st.expander("📊 Performance", expanded=False):
+        # Performance metrics (Overall)
+        with st.expander("📊 Overall Performance", expanded=False):
             metrics = monitor.get_dashboard_metrics()
             if 'status' not in metrics:
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric("Avg Response", f"{metrics['avg_response_time']:.2f}s")
                     st.metric("Total Queries", metrics['total_requests'])
+                    if metrics.get('avg_llm_time', 0) > 0:
+                        st.metric("Avg LLM Time", f"{metrics['avg_llm_time']:.2f}s")
                 with col2:
                     st.metric("Avg Retrieval", f"{metrics['avg_retrieval_time']:.2f}s")
                     st.metric("Recent Errors", metrics['recent_errors'])
+                    if metrics.get('p95_response_time', 0) > 0:
+                        st.metric("P95 Response", f"{metrics['p95_response_time']:.2f}s")
             else:
                 st.info(metrics['status'])
-        
-        # Debug logs
-        with st.expander("🐛 Debug Logs", expanded=False):
-            if st.button("Clear Logs"):
-                st.session_state.execution_log = []
-                st.rerun()
-            
-            if st.session_state.execution_log:
-                for log in reversed(st.session_state.execution_log[-10:]):
-                    if log['timing']:
-                        st.text(f"{log['timestamp']} | {log['step']} | {log['timing']}")
-                    else:
-                        st.text(f"{log['timestamp']} | {log['step']}")
-                    if log['details']:
-                        st.text(f"  └─ {log['details']}")
-            else:
-                st.text("No logs yet")
         
         # Conversation history
         if st.session_state.property_id and st.session_state.config['enable_logging']:
@@ -1076,7 +1147,7 @@ def main():
                                     st.write(f"**{role.title()}:** {content}")
                 else:
                     st.text("No conversation history")
-    
+                    
     # Main interface
     if not st.session_state.property_id:
         # Equipment selection screen
