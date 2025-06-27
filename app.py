@@ -174,7 +174,7 @@ class ConversationLogger:
 
 # ——— App config ———
 st.set_page_config(
-    page_title="Multi-Property RAG Chat", 
+    page_title="Plant Hire Equipment Assistant", 
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -235,7 +235,8 @@ if 'config' not in st.session_state:
     st.session_state.config = {
         'max_response_words': 100,
         'context_window': 4,
-        'enable_logging': True
+        'enable_logging': True,
+        'use_groq': True
     }
 
 # ——— Performance Monitor ———
@@ -342,14 +343,15 @@ def get_system_prompt(property_id: int) -> str:
     return json.dumps({
         "role": "system",
         "content": {
-            "persona": "helpful, warm property expert",
-            "tone": "short, friendly sentences",
-            "focus_rule": "Answer only the most recent guest request",
-            "fallback_response": "I'm sorry, I don't have that information. Please contact your host for assistance.",
+            "persona": "helpful, knowledgeable plant hire equipment expert",
+            "tone": "clear, professional, safety-focused",
+            "focus_rule": "Answer only the most recent equipment inquiry",
+            "fallback_response": "I'm sorry, I don't have that information. Please contact your equipment supplier or safety officer for assistance.",
             "response_constraints": {
                 "format": "plain text only",
                 "length_limit": f"max {st.session_state.config['max_response_words']} words",
-                "no_hallucination": "Only use information from the provided context"
+                "no_hallucination": "Only use information from the provided context",
+                "safety_first": "Always prioritize safety information when relevant"
             }
         }
     })
@@ -359,7 +361,7 @@ EDITOR_PROMPT = json.dumps({
     "role": "editor",
     "task": "Make the response more concise while keeping all facts",
     "rules": [
-        "Keep the warm, friendly tone",
+        "Keep the professional, safety-focused tone",
         "Preserve all factual information",
         "Remove redundancy and filler",
         "Maximum 50 words unless more detail is essential"
@@ -369,8 +371,8 @@ EDITOR_PROMPT = json.dumps({
 # ——— Question Processing ———
 def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
     """Process and enrich the user question with smart context detection."""
-    # Simple enrichment - add property context
-    enriched = f"Guest inquiry for Property #{property_id}: {raw_q.strip()}"
+    # Simple enrichment - add equipment context
+    enriched = f"Equipment inquiry for Plant Hire #{property_id}: {raw_q.strip()}"
     
     # Smart context detection using entity tracking and explicit reference patterns
     if len(chat_history) > 1:
@@ -400,18 +402,18 @@ def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
             # Extract meaningful entities (nouns/topics) from previous exchange
             # Focus on domain-specific terms that are likely to be referenced
             entity_patterns = [
-                r'\b(pool|spa|hot tub|jacuzzi)\b',
-                r'\b(towel|linen|sheet|blanket)s?\b',
-                r'\b(kitchen|bedroom|bathroom|living room|garage|patio|deck|balcony)\b',
-                r'\b(wifi|internet|password|network)\b',
-                r'\b(parking|car|vehicle|garage|driveway)\b',
-                r'\b(key|lock|door|gate|access|code)\b',
-                r'\b(appliance|dishwasher|washer|dryer|oven|stove|microwave|refrigerator|fridge)\b',
-                r'\b(induction|cooktop|burner)\b',
-                r'\b(tv|television|remote|cable|streaming)\b',
-                r'\b(heat|ac|air|thermostat|temperature)\b',
-                r'\b(trash|garbage|recycling|bin)\b',
-                r'\b(checkout|checkin|arrival|departure)\b'
+                r'\b(excavator|digger|loader|bulldozer|crane|forklift|dumper|roller)\b',
+                r'\b(engine|hydraulic|fuel|oil|filter|battery|tire|track)\b',
+                r'\b(operator|driver|safety|helmet|vest|harness|seatbelt)\b',
+                r'\b(manual|instruction|procedure|checklist|inspection)\b',
+                r'\b(start|stop|emergency|shutdown|restart)\b',
+                r'\b(weight|capacity|reach|height|depth|angle)\b',
+                r'\b(terrain|ground|slope|mud|water|rock)\b',
+                r'\b(maintenance|service|repair|part|spare)\b',
+                r'\b(control|lever|pedal|button|switch|gauge)\b',
+                r'\b(attachment|bucket|hammer|drill|grapple)\b',
+                r'\b(transport|trailer|loading|unloading)\b',
+                r'\b(weather|rain|wind|temperature|visibility)\b'
             ]
             
             # Find entities in previous messages
@@ -447,19 +449,106 @@ def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
     
     return enriched
 
-# ——— Hybrid Retrieval ———
-def retrieve_relevant_context(enriched_q: str, property_id: int):
-    """Fast, smart hybrid retrieval using semantic and keyword search."""
+# ——— Dual Retrieval System ———
+def retrieve_safety_information(enriched_q: str, property_id: int):
+    """Retrieve safety-related information for the query."""
     try:
-        log_execution("🔍 Starting Retrieval", f"Property {property_id}")
+        log_execution("🛡️ Starting Safety Retrieval", f"Equipment {property_id}")
         start_time = time.time()
         
         # Ensure we're using RETRIEVAL warehouse
         session.sql("USE WAREHOUSE RETRIEVAL").collect()
 
-        # Step 1: Extract meaningful keyword tokens (≥ 4 chars, deduplicated, lowercased)
+        # Extract safety-related keywords
+        safety_keywords = ['safety', 'danger', 'hazard', 'risk', 'emergency', 'stop', 'warning', 'caution', 'protective', 'helmet', 'vest', 'harness', 'seatbelt', 'shutdown', 'evacuate', 'alarm', 'alert']
+        safety_tokens = []
+        for keyword in safety_keywords:
+            if keyword in enriched_q.lower():
+                safety_tokens.append(keyword)
+        
+        # If no safety keywords found, still search for safety content
+        if not safety_tokens:
+            safety_tokens = ['safety', 'warning', 'caution']
+
+        keyword_json = json.dumps(safety_tokens)
+
+        # Safety-focused retrieval
+        safety_sql = f"""
+        WITH safety_results AS (
+            SELECT
+                CHUNK AS snippet,
+                CHUNK_INDEX AS chunk_index,
+                RELATIVE_PATH AS path,
+                VECTOR_COSINE_SIMILARITY(
+                    LABEL_EMBED,
+                    {EMBED_FN}('{EMBED_MODEL}', ?)
+                ) AS similarity,
+                'safety' AS search_type
+            FROM TEST_DB.CORTEX.RAW_TEXT
+            WHERE PROPERTY_ID = ?
+            AND label_embed IS NOT NULL
+            AND (
+                UPPER(CHUNK) LIKE '%SAFETY%' 
+                OR UPPER(CHUNK) LIKE '%WARNING%' 
+                OR UPPER(CHUNK) LIKE '%CAUTION%'
+                OR UPPER(CHUNK) LIKE '%DANGER%'
+                OR UPPER(CHUNK) LIKE '%HAZARD%'
+                OR UPPER(CHUNK) LIKE '%EMERGENCY%'
+            )
+            ORDER BY similarity DESC
+            LIMIT 3
+        ),
+        safety_keyword_results AS (
+            SELECT
+                CHUNK AS snippet,
+                CHUNK_INDEX AS chunk_index,
+                RELATIVE_PATH AS path,
+                0.6 AS similarity,
+                'safety_keyword' AS search_type
+            FROM TEST_DB.CORTEX.RAW_TEXT
+            WHERE PROPERTY_ID = ?
+            AND label_embed IS NOT NULL
+            AND EXISTS (
+                SELECT 1
+                FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
+                WHERE UPPER(CHUNK) LIKE CONCAT('%', UPPER(kw.value), '%')
+            )
+            LIMIT 2
+        )
+        SELECT DISTINCT 
+            snippet, chunk_index, path, similarity, search_type
+        FROM (
+            SELECT * FROM safety_results
+            UNION ALL
+            SELECT * FROM safety_keyword_results
+        )
+        WHERE similarity >= {SIMILARITY_THRESHOLD}
+        ORDER BY similarity DESC
+        LIMIT 3
+        """
+
+        params = (enriched_q, property_id, property_id, keyword_json)
+        results = session.sql(safety_sql, params).collect()
+
+        log_execution("✅ Safety Retrieval complete", f"{len(results)} results in {time.time() - start_time:.2f}s")
+        return results
+
+    except Exception as e:
+        log_execution("❌ Safety Retrieval error", str(e))
+        return []
+
+def retrieve_operational_information(enriched_q: str, property_id: int):
+    """Retrieve operational/troubleshooting information for the query."""
+    try:
+        log_execution("🔧 Starting Operational Retrieval", f"Equipment {property_id}")
+        start_time = time.time()
+        
+        # Ensure we're using RETRIEVAL warehouse
+        session.sql("USE WAREHOUSE RETRIEVAL").collect()
+
+        # Extract meaningful keyword tokens (≥ 4 chars, deduplicated, lowercased)
         # Exclude common words that appear in every query due to enrichment
-        stop_words = {'guest', 'inquiry', 'property', 'discussing', 'context'}
+        stop_words = {'equipment', 'inquiry', 'property', 'discussing', 'context', 'plant', 'hire'}
         tokens = re.findall(r'\b\w{4,}\b', enriched_q.lower())
         # Filter out stop words and deduplicate
         keywords = []
@@ -472,9 +561,8 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                     break
         keyword_json = json.dumps(keywords)
 
-        # Step 2: Execute hybrid SQL with embedded keyword logic
-        # NOTE: Update EMBEDDINGS column name to match your table schema
-        hybrid_sql = f"""
+        # Operational/troubleshooting retrieval
+        operational_sql = f"""
         WITH semantic_results AS (
             SELECT
                 CHUNK AS snippet,
@@ -484,10 +572,10 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                     LABEL_EMBED,
                     {EMBED_FN}('{EMBED_MODEL}', ?)
                 ) AS similarity,
-                'semantic' AS search_type
+                'operational' AS search_type
             FROM TEST_DB.CORTEX.RAW_TEXT
             WHERE PROPERTY_ID = ?
-            AND label_embed IS NOT NULL  -- Only valid, embedded chunks
+            AND label_embed IS NOT NULL
             ORDER BY similarity DESC
             LIMIT {TOP_K}
         ),
@@ -496,16 +584,16 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
                 CHUNK AS snippet,
                 CHUNK_INDEX AS chunk_index,
                 RELATIVE_PATH AS path,
-                0.48 AS similarity,  -- lowered keyword match score to avoid dominance
+                0.48 AS similarity,
                 'keyword' AS search_type
             FROM TEST_DB.CORTEX.RAW_TEXT
             WHERE PROPERTY_ID = ?
-            AND label_embed IS NOT NULL  -- Only valid, embedded chunks
-              AND EXISTS (
+            AND label_embed IS NOT NULL
+            AND EXISTS (
                 SELECT 1
                 FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
                 WHERE UPPER(CHUNK) LIKE CONCAT('%', UPPER(kw.value), '%')
-              )
+            )
             LIMIT 2
         )
         SELECT DISTINCT 
@@ -520,38 +608,45 @@ def retrieve_relevant_context(enriched_q: str, property_id: int):
         LIMIT {TOP_K}
         """
 
-        # Execute the query with parameters
         params = (enriched_q, property_id, property_id, keyword_json)
-        results = session.sql(hybrid_sql, params).collect()
+        results = session.sql(operational_sql, params).collect()
 
-        log_execution("✅ Retrieval complete", f"{len(results)} results in {time.time() - start_time:.2f}s")
+        log_execution("✅ Operational Retrieval complete", f"{len(results)} results in {time.time() - start_time:.2f}s")
         return results
 
     except Exception as e:
-        log_execution("❌ Retrieval error", str(e))
+        log_execution("❌ Operational Retrieval error", str(e))
         return []
 
 # ——— Answer Generation ———
 def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int):
-    """Generate answer with optional refinement."""
+    """Generate answer with dual retrieval (safety + operational)."""
     try:
         log_execution("🚀 Starting Answer Generation", f"Question: '{raw_question[:50]}...'")
         
         enriched_q = process_question(raw_question, property_id, chat_history)
         
-        # Retrieve context
+        # Dual retrieval: Safety first, then operational
         retrieval_start = time.time()
-        results = retrieve_relevant_context(enriched_q, property_id)
+        
+        # Get safety information
+        safety_results = retrieve_safety_information(enriched_q, property_id)
+        
+        # Get operational information
+        operational_results = retrieve_operational_information(enriched_q, property_id)
+        
         retrieval_time = time.time() - retrieval_start
         
-        # Parse results
+        # Combine and parse results
+        all_results = safety_results + operational_results
+        
         snippets = []
         chunk_idxs = []
         paths = []
         similarities = []
         search_types = []
         
-        for row in results:
+        for row in all_results:
             # Handle both dictionary-style and attribute-style access
             if hasattr(row, 'SNIPPET'):
                 snippets.append(row.SNIPPET)
@@ -575,20 +670,32 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
                     search_types.append(row[4])
         
         if not snippets:
-            fallback = "I don't have specific information about that. Please contact your host for assistance."
+            fallback = "I don't have specific information about that equipment. Please contact your equipment supplier or safety officer for assistance."
             return enriched_q, fallback, [], [], [], [], [], False, 0, retrieval_time
         
-        # Build prompt
-        context_section = f"Property Information:\n"
-        for i, snippet in enumerate(snippets, 1):
-            context_section += f"\n[Section {i}]:\n{snippet}\n"
+        # Build prompt with safety-first approach
+        context_section = f"Equipment Information:\n"
+        
+        # Add safety information first if available
+        safety_snippets = [s for i, s in enumerate(snippets) if search_types[i] in ['safety', 'safety_keyword']]
+        if safety_snippets:
+            context_section += f"\n[SAFETY INFORMATION]:\n"
+            for i, snippet in enumerate(safety_snippets, 1):
+                context_section += f"{snippet}\n"
+        
+        # Add operational information
+        operational_snippets = [s for i, s in enumerate(snippets) if search_types[i] in ['operational', 'keyword']]
+        if operational_snippets:
+            context_section += f"\n[OPERATIONAL INFORMATION]:\n"
+            for i, snippet in enumerate(operational_snippets, 1):
+                context_section += f"{snippet}\n"
         
         system_prompt = get_system_prompt(property_id)
         full_prompt = (
             system_prompt + "\n\n" +
-            f"Guest: {raw_question}\n\n" +
+            f"Equipment Operator: {raw_question}\n\n" +
             context_section + "\n\n" +
-            "Assistant: Based on the property information above, "
+            "Assistant: Based on the equipment information above, "
         )
         
         # Generate response
@@ -600,8 +707,8 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
             try:
                 # Convert prompt to Groq format
                 messages = [
-                    {"role": "system", "content": "You are a helpful, warm property expert. Answer only the most recent guest request using the provided property information. Keep responses short and friendly, max 100 words."},
-                    {"role": "user", "content": f"Guest: {raw_question}\n\n{context_section}\n\nBased on the property information above, please answer the guest's question."}
+                    {"role": "system", "content": "You are a helpful, knowledgeable plant hire equipment expert. Answer only the most recent equipment inquiry using the provided information. Keep responses clear and professional, prioritize safety information when relevant, max 100 words."},
+                    {"role": "user", "content": f"Equipment Operator: {raw_question}\n\n{context_section}\n\nBased on the equipment information above, please answer the operator's question."}
                 ]
                 
                 # Call Groq API
@@ -695,9 +802,304 @@ def main():
     with st.sidebar:
         st.write("📊 System Information")
         
-        # Property switcher
+        # Equipment switcher (keeping property_id field name)
         if st.session_state.property_id:
-            if st.button("🔄 Switch Property", type="secondary"):
+            if st.button("🔄 Switch Equipment", type="secondary"):
                 # End current conversation
                 if st.session_state.conversation_id:
                     conversation_logger.end_conversation(st.session_state.conversation_id)
+                # Reset state
+                st.session_state.property_id = None
+                st.session_state.chat_history = []
+                st.session_state.conversation_id = None
+                st.session_state.message_counter = 0
+                st.rerun()
+        
+        # Show current equipment
+        if st.session_state.property_id:
+            st.info(f"🚜 Equipment #{st.session_state.property_id}")
+        
+        # Configuration section
+        with st.expander("⚙️ Settings", expanded=False):
+            st.session_state.config['enable_logging'] = st.checkbox(
+                "Enable conversation logging", 
+                value=st.session_state.config['enable_logging']
+            )
+            
+            st.session_state.config['use_groq'] = st.checkbox(
+                "Use Groq API (faster)", 
+                value=st.session_state.config.get('use_groq', True),
+                help="When enabled, uses Groq API for faster responses. Falls back to Cortex if unavailable."
+            )
+        
+        # Performance metrics
+        with st.expander("📊 Performance", expanded=False):
+            metrics = monitor.get_dashboard_metrics()
+            if 'status' not in metrics:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Avg Response", f"{metrics['avg_response_time']:.2f}s")
+                    st.metric("Total Queries", metrics['total_requests'])
+                with col2:
+                    st.metric("Avg Retrieval", f"{metrics['avg_retrieval_time']:.2f}s")
+                    st.metric("Recent Errors", metrics['recent_errors'])
+            else:
+                st.info(metrics['status'])
+        
+        # Debug logs
+        with st.expander("🐛 Debug Logs", expanded=False):
+            if st.button("Clear Logs"):
+                st.session_state.execution_log = []
+                st.rerun()
+            
+            if st.session_state.execution_log:
+                for log in reversed(st.session_state.execution_log[-10:]):
+                    if log['timing']:
+                        st.text(f"{log['timestamp']} | {log['step']} | {log['timing']}")
+                    else:
+                        st.text(f"{log['timestamp']} | {log['step']}")
+                    if log['details']:
+                        st.text(f"  └─ {log['details']}")
+            else:
+                st.text("No logs yet")
+        
+        # Conversation history
+        if st.session_state.property_id and st.session_state.config['enable_logging']:
+            with st.expander("📜 Conversation History", expanded=False):
+                history = conversation_logger.get_conversation_history(st.session_state.property_id, limit=5)
+                if history:
+                    for conv in history:
+                        start_time = conv.get('START_TIME', 'Unknown')
+                        status = conv.get('STATUS', 'Unknown')
+                        conv_id = conv.get('CONVERSATION_ID', 'Unknown')
+                        
+                        if st.button(f"📅 {start_time} ({status})", key=f"conv_{conv_id}"):
+                            messages = conversation_logger.get_conversation_messages(conv_id)
+                            if messages:
+                                st.write("**Conversation Messages:**")
+                                for msg in messages:
+                                    role = msg.get('ROLE', 'Unknown')
+                                    content = msg.get('CONTENT', 'No content')
+                                    st.write(f"**{role.title()}:** {content}")
+                else:
+                    st.text("No conversation history")
+    
+    # Main interface
+    if not st.session_state.property_id:
+        # Equipment selection screen
+        st.title("🚜 Plant Hire Equipment Assistant")
+        st.markdown("### Welcome! Let's get you connected to your equipment.")
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown("#### Select Equipment Type")
+            
+            # Common equipment categories with IDs
+            equipment_options = {
+                "Excavators & Diggers": [
+                    ("Mini Excavator (1.5T)", 1001),
+                    ("Midi Excavator (5T)", 1002),
+                    ("Large Excavator (20T)", 1003),
+                    ("Wheeled Excavator", 1004)
+                ],
+                "Loaders": [
+                    ("Skid Steer Loader", 2001),
+                    ("Compact Track Loader", 2002),
+                    ("Wheel Loader", 2003),
+                    ("Backhoe Loader", 2004)
+                ],
+                "Compaction Equipment": [
+                    ("Vibratory Roller", 3001),
+                    ("Tandem Roller", 3002),
+                    ("Plate Compactor", 3003),
+                    ("Jumping Jack", 3004)
+                ],
+                "Lifting Equipment": [
+                    ("Mobile Crane", 4001),
+                    ("Tower Crane", 4002),
+                    ("Telehandler", 4003),
+                    ("Scissor Lift", 4004)
+                ],
+                "Other Equipment": [
+                    ("Bulldozer", 5001),
+                    ("Dump Truck", 5002),
+                    ("Concrete Mixer", 5003),
+                    ("Generator", 5004)
+                ]
+            }
+            
+            # Display equipment selection
+            for category, equipment_list in equipment_options.items():
+                st.markdown(f"**{category}**")
+                cols = st.columns(2)
+                for idx, (name, eq_id) in enumerate(equipment_list):
+                    with cols[idx % 2]:
+                        if st.button(f"🔧 {name}", key=f"eq_{eq_id}", use_container_width=True):
+                            st.session_state.property_id = eq_id
+                            # Start new conversation
+                            if st.session_state.config['enable_logging']:
+                                st.session_state.conversation_id = conversation_logger.start_conversation(
+                                    eq_id, st.session_state.session_id
+                                )
+                            st.rerun()
+            
+            # Manual entry option
+            st.markdown("---")
+            st.markdown("**Or enter equipment ID manually:**")
+            manual_id = st.text_input("Equipment ID", placeholder="e.g., 1001")
+            if st.button("Connect to Equipment", type="primary", disabled=not manual_id):
+                try:
+                    eq_id = int(manual_id)
+                    st.session_state.property_id = eq_id
+                    # Start new conversation
+                    if st.session_state.config['enable_logging']:
+                        st.session_state.conversation_id = conversation_logger.start_conversation(
+                            eq_id, st.session_state.session_id
+                        )
+                    st.rerun()
+                except ValueError:
+                    st.error("Please enter a valid equipment ID number")
+    
+    else:
+        # Chat interface
+        st.title("🚜 Plant Hire Equipment Assistant")
+        
+        # Welcome message for new conversations
+        if not st.session_state.chat_history:
+            welcome_msg = f"""
+            Welcome! I'm your equipment assistant for **Equipment #{st.session_state.property_id}**.
+            
+            I can help you with:
+            - 🛡️ **Safety procedures** and warnings
+            - 🔧 **Operating instructions** and controls
+            - 🔍 **Troubleshooting** common issues
+            - 📋 **Maintenance** requirements
+            - ⚠️ **Emergency procedures**
+            
+            What would you like to know about your equipment?
+            """
+            st.session_state.chat_history.append({"role": "assistant", "content": welcome_msg})
+        
+        # Display chat history
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+        
+        # Chat input
+        if prompt := st.chat_input("Ask about your equipment..."):
+            # Add user message
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.write(prompt)
+            
+            # Generate response
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                
+                try:
+                    # Show thinking indicator
+                    with st.spinner("Checking equipment information..."):
+                        start_time = time.time()
+                        
+                        # Get answer with dual retrieval
+                        (enriched_q, response, snippets, chunk_idxs, paths, 
+                         similarities, search_types, used_refinement, word_count, retrieval_time) = get_enhanced_answer(
+                            st.session_state.chat_history, 
+                            prompt, 
+                            st.session_state.property_id
+                        )
+                        
+                        total_time = time.time() - start_time
+                    
+                    # Stream the response
+                    stream_response(response, message_placeholder)
+                    
+                    # Add to chat history
+                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    st.session_state.message_counter += 1
+                    
+                    # Log the conversation
+                    if st.session_state.config['enable_logging'] and st.session_state.conversation_id:
+                        # Log user message
+                        conversation_logger.log_message(
+                            st.session_state.conversation_id,
+                            "user",
+                            prompt,
+                            metadata={"enriched": enriched_q},
+                            property_id=st.session_state.property_id
+                        )
+                        
+                        # Log assistant response
+                        conversation_logger.log_message(
+                            st.session_state.conversation_id,
+                            "assistant",
+                            response,
+                            metadata={
+                                "word_count": word_count,
+                                "retrieval_time": retrieval_time,
+                                "total_time": total_time,
+                                "snippets_used": len(snippets),
+                                "used_refinement": used_refinement
+                            },
+                            property_id=st.session_state.property_id
+                        )
+                    
+                    # Store query info for debugging
+                    st.session_state.last_query_info = {
+                        "question": prompt,
+                        "enriched": enriched_q,
+                        "response": response,
+                        "snippets": snippets,
+                        "paths": paths,
+                        "similarities": similarities,
+                        "search_types": search_types,
+                        "timing": {
+                            "retrieval": retrieval_time,
+                            "total": total_time
+                        }
+                    }
+                    
+                    # Log performance metrics
+                    monitor.log_request({
+                        'latency': total_time,
+                        'retrieval_time': retrieval_time,
+                        'used_refinement': used_refinement,
+                        'word_count': word_count
+                    })
+                    
+                    # Show debug info if enabled
+                    if st.checkbox("Show retrieval details", key=f"debug_{st.session_state.message_counter}"):
+                        with st.expander("🔍 Retrieval Information"):
+                            st.write(f"**Enriched Query:** {enriched_q}")
+                            st.write(f"**Retrieved {len(snippets)} chunks**")
+                            
+                            # Show safety information first
+                            safety_count = sum(1 for st in search_types if st in ['safety', 'safety_keyword'])
+                            if safety_count > 0:
+                                st.write(f"**🛡️ Safety Information ({safety_count} chunks)**")
+                                for i, (snippet, sim, stype) in enumerate(zip(snippets, similarities, search_types)):
+                                    if stype in ['safety', 'safety_keyword']:
+                                        st.write(f"- [{stype}] (similarity: {sim:.3f})")
+                                        st.text(snippet[:200] + "..." if len(snippet) > 200 else snippet)
+                            
+                            # Show operational information
+                            op_count = sum(1 for st in search_types if st in ['operational', 'keyword'])
+                            if op_count > 0:
+                                st.write(f"**🔧 Operational Information ({op_count} chunks)**")
+                                for i, (snippet, sim, stype) in enumerate(zip(snippets, similarities, search_types)):
+                                    if stype in ['operational', 'keyword']:
+                                        st.write(f"- [{stype}] (similarity: {sim:.3f})")
+                                        st.text(snippet[:200] + "..." if len(snippet) > 200 else snippet)
+                            
+                            st.write(f"**⏱️ Timing:** Retrieval: {retrieval_time:.2f}s, Total: {total_time:.2f}s")
+                
+                except Exception as e:
+                    error = ChatError(
+                        error_type="generation_error",
+                        user_message="I encountered an error while processing your request. Please try again.",
+                        technical_details=str(e)
+                    )
+                    error.display()
+
+if __name__ == "__main__":
+    main()
