@@ -489,12 +489,12 @@ def retrieve_safety_information(enriched_q: str, property_id: int):
             WHERE PROPERTY_ID = ?
             AND label_embed IS NOT NULL
             AND (
-                UPPER(CHUNK) LIKE '%SAFETY%' 
-                OR UPPER(CHUNK) LIKE '%WARNING%' 
-                OR UPPER(CHUNK) LIKE '%CAUTION%'
-                OR UPPER(CHUNK) LIKE '%DANGER%'
-                OR UPPER(CHUNK) LIKE '%HAZARD%'
-                OR UPPER(CHUNK) LIKE '%EMERGENCY%'
+                UPPER(LABEL) LIKE '%SAFETY%' 
+                OR UPPER(LABEL) LIKE '%WARNING%' 
+                OR UPPER(LABEL) LIKE '%CAUTION%'
+                OR UPPER(LABEL) LIKE '%DANGER%'
+                OR UPPER(LABEL) LIKE '%HAZARD%'
+                OR UPPER(LABEL) LIKE '%EMERGENCY%'
             )
             ORDER BY similarity DESC
             LIMIT 3
@@ -512,7 +512,7 @@ def retrieve_safety_information(enriched_q: str, property_id: int):
             AND EXISTS (
                 SELECT 1
                 FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
-                WHERE UPPER(CHUNK) LIKE CONCAT('%', UPPER(kw.value), '%')
+                WHERE UPPER(LABEL) LIKE CONCAT('%', UPPER(kw.value), '%')
             )
             LIMIT 2
         )
