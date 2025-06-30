@@ -227,7 +227,7 @@ FALLBACK_MODEL = 'MIXTRAL-8X7B'  # Snowflake Cortex fallback
 EMBED_MODEL = 'SNOWFLAKE-ARCTIC-EMBED-L-V2.0'
 EMBED_FN = 'SNOWFLAKE.CORTEX.EMBED_TEXT_1024'
 WORD_THRESHOLD = 100  # Increased from 50 to 100
-TOP_K = 5  # Fixed value, no longer configurable
+TOP_K = 4  # Fixed value, no longer configurable
 SIMILARITY_THRESHOLD = 0.2  # Fixed value, no longer configurable
 
 # ——— Configuration ———
@@ -488,14 +488,7 @@ def retrieve_safety_information(enriched_q: str, property_id: int):
             FROM TEST_DB.CORTEX.RAW_TEXT
             WHERE PROPERTY_ID = ?
             AND label_embed IS NOT NULL
-            AND (
-                UPPER(LABEL) LIKE '%SAFETY%' 
-                OR UPPER(LABEL) LIKE '%WARNING%' 
-                OR UPPER(LABEL) LIKE '%CAUTION%'
-                OR UPPER(LABEL) LIKE '%DANGER%'
-                OR UPPER(LABEL) LIKE '%HAZARD%'
-                OR UPPER(LABEL) LIKE '%EMERGENCY%'
-            )
+            AND chunk_type = 'safety'
             ORDER BY similarity DESC
             LIMIT 3
         ),
@@ -577,6 +570,7 @@ def retrieve_operational_information(enriched_q: str, property_id: int):
             FROM TEST_DB.CORTEX.RAW_TEXT
             WHERE PROPERTY_ID = ?
             AND label_embed IS NOT NULL
+            AND chunk_type = 'operational'
             ORDER BY similarity DESC
             LIMIT {TOP_K}
         ),
