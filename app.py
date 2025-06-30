@@ -227,7 +227,7 @@ FALLBACK_MODEL = 'MIXTRAL-8X7B'  # Snowflake Cortex fallback
 EMBED_MODEL = 'SNOWFLAKE-ARCTIC-EMBED-L-V2.0'
 EMBED_FN = 'SNOWFLAKE.CORTEX.EMBED_TEXT_1024'
 WORD_THRESHOLD = 100  # Increased from 50 to 100
-TOP_K = 4  # Fixed value, no longer configurable
+TOP_K = 5  # Fixed value, no longer configurable
 SIMILARITY_THRESHOLD = 0.2  # Fixed value, no longer configurable
 
 # ——— Configuration ———
@@ -480,7 +480,7 @@ def retrieve_safety_information(enriched_q: str, property_id: int):
             {EMBED_FN}('{EMBED_MODEL}', ?)
         ) >= {SIMILARITY_THRESHOLD}
         ORDER BY similarity DESC
-        LIMIT 3
+        LIMIT {TOP_K}
         """
 
         params = (enriched_q, property_id, enriched_q)
@@ -557,6 +557,8 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         # Combine and parse results
         all_results = safety_results + operational_results
         
+        log_execution("📊 Chunk Summary", f"Safety: {len(safety_results)}, Operational: {len(operational_results)}, Total: {len(all_results)}")
+        
         snippets = []
         chunk_idxs = []
         paths = []
@@ -606,6 +608,8 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
             context_section += f"\n[OPERATIONAL INFORMATION]:\n"
             for i, snippet in enumerate(operational_snippets, 1):
                 context_section += f"{snippet}\n"
+        
+        log_execution("📤 LLM Context", f"Safety chunks: {len(safety_snippets)}, Operational chunks: {len(operational_snippets)}, Total sent to LLM: {len(safety_snippets) + len(operational_snippets)}")
         
         system_prompt = get_system_prompt(property_id)
         full_prompt = (
@@ -723,9 +727,6 @@ def format_main_response(response: str) -> str:
 
 def format_response_with_safety(response: str, safety_snippets: list, operational_snippets: list, question: str) -> str:
     """Format response with safety information first and attention-grabbing emojis."""
-    # Check if this is the first assistant response (message_counter = 0)
-    is_first_response = st.session_state.message_counter == 0
-    
     # Determine if we have relevant safety information
     has_relevant_safety = len(safety_snippets) > 0
     
@@ -736,8 +737,8 @@ def format_response_with_safety(response: str, safety_snippets: list, operationa
     
     formatted_parts = []
     
-    # Add safety information first if available and relevant
-    if has_relevant_safety and (is_first_response or indicates_uncertainty):
+    # Add safety information first if available
+    if has_relevant_safety:
         # Process safety information through separate LLM call
         processed_safety = process_safety_information(safety_snippets, question)
         if processed_safety:
