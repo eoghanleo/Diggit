@@ -460,68 +460,30 @@ def retrieve_safety_information(enriched_q: str, property_id: int):
         # Ensure we're using RETRIEVAL warehouse
         session.sql("USE WAREHOUSE RETRIEVAL").collect()
 
-        # Extract safety-related keywords
-        safety_keywords = ['safety', 'danger', 'hazard', 'risk', 'emergency', 'stop', 'warning', 'caution', 'protective', 'helmet', 'vest', 'harness', 'seatbelt', 'shutdown', 'evacuate', 'alarm', 'alert']
-        safety_tokens = []
-        for keyword in safety_keywords:
-            if keyword in enriched_q.lower():
-                safety_tokens.append(keyword)
-        
-        # If no safety keywords found, still search for safety content
-        if not safety_tokens:
-            safety_tokens = ['safety', 'warning', 'caution']
-
-        keyword_json = json.dumps(safety_tokens)
-
-        # Safety-focused retrieval
+        # Pure semantic safety retrieval
         safety_sql = f"""
-        WITH safety_results AS (
-            SELECT
-                CHUNK AS snippet,
-                CHUNK_INDEX AS chunk_index,
-                RELATIVE_PATH AS path,
-                VECTOR_COSINE_SIMILARITY(
-                    LABEL_EMBED,
-                    {EMBED_FN}('{EMBED_MODEL}', ?)
-                ) AS similarity,
-                'safety' AS search_type
-            FROM TEST_DB.CORTEX.RAW_TEXT
-            WHERE PROPERTY_ID = ?
-            AND label_embed IS NOT NULL
-            AND chunk_type = 'safety'
-            ORDER BY similarity DESC
-            LIMIT 3
-        ),
-        safety_keyword_results AS (
-            SELECT
-                CHUNK AS snippet,
-                CHUNK_INDEX AS chunk_index,
-                RELATIVE_PATH AS path,
-                0.6 AS similarity,
-                'safety_keyword' AS search_type
-            FROM TEST_DB.CORTEX.RAW_TEXT
-            WHERE PROPERTY_ID = ?
-            AND label_embed IS NOT NULL
-            AND EXISTS (
-                SELECT 1
-                FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
-                WHERE UPPER(LABEL) LIKE CONCAT('%', UPPER(kw.value), '%')
-            )
-            LIMIT 2
-        )
-        SELECT DISTINCT 
-            snippet, chunk_index, path, similarity, search_type
-        FROM (
-            SELECT * FROM safety_results
-            UNION ALL
-            SELECT * FROM safety_keyword_results
-        )
-        WHERE similarity >= {SIMILARITY_THRESHOLD}
+        SELECT
+            CHUNK AS snippet,
+            CHUNK_INDEX AS chunk_index,
+            RELATIVE_PATH AS path,
+            VECTOR_COSINE_SIMILARITY(
+                LABEL_EMBED,
+                {EMBED_FN}('{EMBED_MODEL}', ?)
+            ) AS similarity,
+            'safety' AS search_type
+        FROM TEST_DB.CORTEX.RAW_TEXT
+        WHERE PROPERTY_ID = ?
+        AND label_embed IS NOT NULL
+        AND chunk_type = 'safety'
+        AND VECTOR_COSINE_SIMILARITY(
+            LABEL_EMBED,
+            {EMBED_FN}('{EMBED_MODEL}', ?)
+        ) >= {SIMILARITY_THRESHOLD}
         ORDER BY similarity DESC
         LIMIT 3
         """
 
-        params = (enriched_q, property_id, property_id, keyword_json)
+        params = (enriched_q, property_id, enriched_q)
         results = session.sql(safety_sql, params).collect()
 
         log_execution("✅ Safety Retrieval complete", f"{len(results)} results in {time.time() - start_time:.2f}s")
@@ -540,70 +502,30 @@ def retrieve_operational_information(enriched_q: str, property_id: int):
         # Ensure we're using RETRIEVAL warehouse
         session.sql("USE WAREHOUSE RETRIEVAL").collect()
 
-        # Extract meaningful keyword tokens (≥ 4 chars, deduplicated, lowercased)
-        # Exclude common words that appear in every query due to enrichment
-        stop_words = {'equipment', 'inquiry', 'property', 'discussing', 'context', 'plant', 'hire'}
-        tokens = re.findall(r'\b\w{4,}\b', enriched_q.lower())
-        # Filter out stop words and deduplicate
-        keywords = []
-        seen = set()
-        for token in tokens:
-            if token not in stop_words and token not in seen:
-                keywords.append(token)
-                seen.add(token)
-                if len(keywords) >= 5:  # limit to top 5 unique keywords
-                    break
-        keyword_json = json.dumps(keywords)
-
-        # Operational/troubleshooting retrieval
+        # Pure semantic operational retrieval
         operational_sql = f"""
-        WITH semantic_results AS (
-            SELECT
-                CHUNK AS snippet,
-                CHUNK_INDEX AS chunk_index,
-                RELATIVE_PATH AS path,
-                VECTOR_COSINE_SIMILARITY(
-                    LABEL_EMBED,
-                    {EMBED_FN}('{EMBED_MODEL}', ?)
-                ) AS similarity,
-                'operational' AS search_type
-            FROM TEST_DB.CORTEX.RAW_TEXT
-            WHERE PROPERTY_ID = ?
-            AND label_embed IS NOT NULL
-            AND chunk_type = 'operational'
-            ORDER BY similarity DESC
-            LIMIT {TOP_K}
-        ),
-        keyword_results AS (
-            SELECT
-                CHUNK AS snippet,
-                CHUNK_INDEX AS chunk_index,
-                RELATIVE_PATH AS path,
-                0.48 AS similarity,
-                'keyword' AS search_type
-            FROM TEST_DB.CORTEX.RAW_TEXT
-            WHERE PROPERTY_ID = ?
-            AND label_embed IS NOT NULL
-            AND EXISTS (
-                SELECT 1
-                FROM TABLE(FLATTEN(INPUT => PARSE_JSON(?))) kw
-                WHERE UPPER(CHUNK) LIKE CONCAT('%', UPPER(kw.value), '%')
-            )
-            LIMIT 2
-        )
-        SELECT DISTINCT 
-            snippet, chunk_index, path, similarity, search_type
-        FROM (
-            SELECT * FROM semantic_results
-            UNION ALL
-            SELECT * FROM keyword_results
-        )
-        WHERE similarity >= {SIMILARITY_THRESHOLD}
+        SELECT
+            CHUNK AS snippet,
+            CHUNK_INDEX AS chunk_index,
+            RELATIVE_PATH AS path,
+            VECTOR_COSINE_SIMILARITY(
+                LABEL_EMBED,
+                {EMBED_FN}('{EMBED_MODEL}', ?)
+            ) AS similarity,
+            'operational' AS search_type
+        FROM TEST_DB.CORTEX.RAW_TEXT
+        WHERE PROPERTY_ID = ?
+        AND label_embed IS NOT NULL
+        AND chunk_type = 'operational'
+        AND VECTOR_COSINE_SIMILARITY(
+            LABEL_EMBED,
+            {EMBED_FN}('{EMBED_MODEL}', ?)
+        ) >= {SIMILARITY_THRESHOLD}
         ORDER BY similarity DESC
         LIMIT {TOP_K}
         """
 
-        params = (enriched_q, property_id, property_id, keyword_json)
+        params = (enriched_q, property_id, enriched_q)
         results = session.sql(operational_sql, params).collect()
 
         log_execution("✅ Operational Retrieval complete", f"{len(results)} results in {time.time() - start_time:.2f}s")
@@ -672,14 +594,14 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         context_section = f"Equipment Information:\n"
         
         # Add safety information first if available
-        safety_snippets = [s for i, s in enumerate(snippets) if search_types[i] in ['safety', 'safety_keyword']]
+        safety_snippets = [s for i, s in enumerate(snippets) if search_types[i] == 'safety']
         if safety_snippets:
             context_section += f"\n[SAFETY INFORMATION]:\n"
             for i, snippet in enumerate(safety_snippets, 1):
                 context_section += f"{snippet}\n"
         
         # Add operational information
-        operational_snippets = [s for i, s in enumerate(snippets) if search_types[i] in ['operational', 'keyword']]
+        operational_snippets = [s for i, s in enumerate(snippets) if search_types[i] == 'operational']
         if operational_snippets:
             context_section += f"\n[OPERATIONAL INFORMATION]:\n"
             for i, snippet in enumerate(operational_snippets, 1):
@@ -1034,7 +956,7 @@ def main():
                 
                 for i, (snippet, sim, search_type, path) in enumerate(zip(snippets, similarities, search_types, paths)):
                     # Color code by search type
-                    if search_type in ['safety', 'safety_keyword']:
+                    if search_type == 'safety':
                         st.markdown(f"**🛡️ Chunk {i+1} - Safety ({search_type})**")
                         color = "#ff6b6b"  # Red for safety
                     else:
