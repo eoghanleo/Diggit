@@ -1079,11 +1079,15 @@ def main():
     # Main interface
     if not st.session_state.property_id:
         # Equipment selection screen
-        st.title("🚜 Plant Hire Equipment Assistant")
-        st.markdown("### Welcome! Let's get you connected to your equipment.")
-        
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
+            # Center the title using CSS
+            st.markdown(
+                "<h1 style='text-align: center;'>🚜 Plant Hire Equipment Assistant</h1>", 
+                unsafe_allow_html=True
+            )
+            st.markdown("<h3 style='text-align: center;'>Welcome! Let's get you connected to your equipment.</h3>", unsafe_allow_html=True)
+            
             st.markdown("#### Enter Equipment ID")
             
             # Manual entry option
