@@ -203,7 +203,8 @@ def get_session():
         connection_parameters = {
             "account": st.secrets["snowflake"]["account"],
             "user": st.secrets["snowflake"]["user"],
-            "password": st.secrets["snowflake"]["password"],
+            "authenticator" : st.secrets["snowflake"]["authenticator"],
+            "private_key": st.secrets["snowflake"]["private_key"],
             "role": st.secrets["snowflake"]["role"],
             "warehouse": st.secrets["snowflake"]["warehouse"],
             "database": st.secrets["snowflake"]["database"],
