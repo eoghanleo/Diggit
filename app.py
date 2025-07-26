@@ -392,19 +392,38 @@ def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
         raw_lower = raw_q.lower()
         
         # 1. Check for explicit reference patterns that indicate follow-up
-        # Using simpler patterns that are more mobile-compatible
-        explicit_patterns = [
-            r'\b(it|this|that)\s+(is|was|does|can|will|should|would)',  # "how does it work", "what is this"
-            r'\bwhat\s+about\s+(it|this|that|them)\b',  # "what about it"
-            r'\b(tell|explain|show)\s+me\s+more\b',  # "tell me more"
-            r'\belse\s+about\b',  # "what else about"
-            r'\bthe\s+same\s+',  # "the same thing"
-            r'\balso\b.*\?',  # questions with "also"
-            r'^(and|but|so)\s+',  # starts with conjunctions
-            r'\b(how|why|when|where)\s+do\s+(i|you)\s+(use|turn|activate|access)\s+(it|this|that|them)\b'  # specific action questions
-        ]
+        # Using Safari-compatible patterns without complex groups
+        has_explicit_reference = False
         
-        has_explicit_reference = any(re.search(pattern, raw_lower) for pattern in explicit_patterns)
+        # Check for simple reference patterns using string matching
+        reference_words = ['it', 'this', 'that', 'them']
+        action_words = ['is', 'was', 'does', 'can', 'will', 'should', 'would']
+        
+        # Simple string matching instead of complex regex
+        for ref_word in reference_words:
+            for action_word in action_words:
+                if f"{ref_word} {action_word}" in raw_lower or f"{action_word} {ref_word}" in raw_lower:
+                    has_explicit_reference = True
+                    break
+            if has_explicit_reference:
+                break
+        
+        # Check for other reference patterns
+        if not has_explicit_reference:
+            reference_phrases = [
+                'what about it', 'what about this', 'what about that', 'what about them',
+                'tell me more', 'explain more', 'show me more',
+                'else about', 'the same', 'also'
+            ]
+            
+            for phrase in reference_phrases:
+                if phrase in raw_lower:
+                    has_explicit_reference = True
+                    break
+            
+            # Check if starts with conjunctions
+            if raw_lower.startswith(('and ', 'but ', 'so ')):
+                has_explicit_reference = True
         
         # 2. Entity/topic tracking - extract key nouns from previous exchange
         if not has_explicit_reference and len(chat_history) >= 2:
@@ -412,33 +431,35 @@ def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
             last_user_msg = next((msg['content'] for msg in reversed(chat_history[:-1]) if msg['role'] == 'user'), "")
             last_assistant_msg = next((msg['content'] for msg in reversed(chat_history) if msg['role'] == 'assistant'), "")
             
-            # Extract meaningful entities (nouns/topics) from previous exchange
-            # Focus on domain-specific terms that are likely to be referenced
-            entity_patterns = [
-                r'\b(excavator|digger|loader|bulldozer|crane|forklift|dumper|roller)\b',
-                r'\b(engine|hydraulic|fuel|oil|filter|battery|tire|track)\b',
-                r'\b(operator|driver|safety|helmet|vest|harness|seatbelt)\b',
-                r'\b(manual|instruction|procedure|checklist|inspection)\b',
-                r'\b(start|stop|emergency|shutdown|restart)\b',
-                r'\b(weight|capacity|reach|height|depth|angle)\b',
-                r'\b(terrain|ground|slope|mud|water|rock)\b',
-                r'\b(maintenance|service|repair|part|spare)\b',
-                r'\b(control|lever|pedal|button|switch|gauge)\b',
-                r'\b(attachment|bucket|hammer|drill|grapple)\b',
-                r'\b(transport|trailer|loading|unloading)\b',
-                r'\b(weather|rain|wind|temperature|visibility)\b'
+            # Extract meaningful entities using simple string matching instead of regex
+            equipment_terms = [
+                'excavator', 'digger', 'loader', 'bulldozer', 'crane', 'forklift', 'dumper', 'roller',
+                'engine', 'hydraulic', 'fuel', 'oil', 'filter', 'battery', 'tire', 'track',
+                'operator', 'driver', 'safety', 'helmet', 'vest', 'harness', 'seatbelt',
+                'manual', 'instruction', 'procedure', 'checklist', 'inspection',
+                'start', 'stop', 'emergency', 'shutdown', 'restart',
+                'weight', 'capacity', 'reach', 'height', 'depth', 'angle',
+                'terrain', 'ground', 'slope', 'mud', 'water', 'rock',
+                'maintenance', 'service', 'repair', 'part', 'spare',
+                'control', 'lever', 'pedal', 'button', 'switch', 'gauge',
+                'attachment', 'bucket', 'hammer', 'drill', 'grapple',
+                'transport', 'trailer', 'loading', 'unloading',
+                'weather', 'rain', 'wind', 'temperature', 'visibility'
             ]
             
-            # Find entities in previous messages
+            # Find entities in previous messages using simple string matching
             previous_entities = set()
-            for pattern in entity_patterns:
-                previous_entities.update(re.findall(pattern, last_user_msg.lower()))
-                previous_entities.update(re.findall(pattern, last_assistant_msg.lower()))
+            for term in equipment_terms:
+                if term in last_user_msg.lower():
+                    previous_entities.add(term)
+                if term in last_assistant_msg.lower():
+                    previous_entities.add(term)
             
             # Check if current question mentions any previous entities
             current_entities = set()
-            for pattern in entity_patterns:
-                current_entities.update(re.findall(pattern, raw_lower))
+            for term in equipment_terms:
+                if term in raw_lower:
+                    current_entities.add(term)
             
             # If there's entity overlap, it might be a follow-up
             has_entity_overlap = bool(previous_entities & current_entities)
@@ -705,22 +726,26 @@ def format_main_response(response: str) -> str:
             formatted_lines.append('')
             continue
             
-        # Check if line contains list indicators
-        if re.match(r'^\d+\.', line):  # Numbered list
-            # Convert to bullet point
-            line = re.sub(r'^\d+\.\s*', '* ', line)
-        elif re.match(r'^\*', line):  # Already bullet point
+        # Check if line contains list indicators using simple string operations
+        if line and line[0].isdigit() and '. ' in line[:5]:  # Numbered list
+            # Convert to bullet point - find first '. ' and replace
+            dot_pos = line.find('. ')
+            if dot_pos > 0:
+                line = '* ' + line[dot_pos + 2:]
+        elif line.startswith('*'):  # Already bullet point
             pass  # Keep as is
-        elif re.match(r'^-', line):  # Dash list
-            line = re.sub(r'^-\s*', '* ', line)
+        elif line.startswith('-'):  # Dash list
+            line = '* ' + line[1:].lstrip()
         elif ':' in line and any(keyword in line.lower() for keyword in ['include', 'possible', 'causes', 'reasons', 'steps', 'check']):
             # This might be a list header, keep as is
             pass
         else:
             # Check if this line contains multiple items separated by common patterns
-            if any(separator in line for separator in ['•', '·', '▪', '▫']):
-                # Replace bullet-like characters with standard *
-                line = re.sub(r'[•·▪▫]\s*', '* ', line)
+            bullet_chars = ['•', '·', '▪', '▫']
+            for char in bullet_chars:
+                if char in line:
+                    line = line.replace(char, '*')
+                    break
         
         formatted_lines.append(line)
     
@@ -867,39 +892,33 @@ def format_safety_response(safety_response: str) -> str:
 
 # ——— Stream Response ———
 def stream_response(response: str, placeholder):
-    """Simulate streaming for better UX while preserving markdown formatting."""
-    # Split by lines to preserve formatting
-    lines = response.split('\n')
-    streamed_lines = []
-    
-    for line in lines:
-        # For each line, stream it character by character to maintain formatting
-        streamed_line = ""
-        for char in line:
-            streamed_line += char
-            # Update the display with all lines so far
-            display_content = '\n'.join(streamed_lines + [streamed_line + "▌"])
-            # Use st.write for iOS compatibility
-            placeholder.empty()
-            placeholder.write(display_content)
-            time.sleep(0.01)  # Faster character streaming
-        
-        # Add the completed line
-        streamed_lines.append(line)
-        
-        # Update display without cursor for completed line
-        display_content = '\n'.join(streamed_lines)
+    """Simulate streaming for better UX with mobile-safe rendering."""
+    # For mobile compatibility, use simpler streaming approach
+    # Check if this is a safety message
+    if "⚠️" in response or "SAFETY" in response.upper():
+        # For safety messages, display immediately without streaming to avoid parsing issues
         placeholder.empty()
-        placeholder.write(display_content)
-        time.sleep(0.02)  # Brief pause between lines
-    
-    # Final display without cursor
-    placeholder.empty()
-    placeholder.write(response)
+        lines = response.split('\n')
+        for i, line in enumerate(lines):
+            if line.strip():
+                placeholder.text(line)
+            time.sleep(0.1)  # Brief pause for readability
+    else:
+        # For regular messages, use simple character streaming
+        streamed_text = ""
+        for char in response:
+            streamed_text += char
+            placeholder.empty()
+            placeholder.text(streamed_text + "▌")
+            time.sleep(0.01)
+        
+        # Final display without cursor
+        placeholder.empty()
+        placeholder.text(response)
 
 # ——— Main App ———
 def main():
-    # Add iOS fix CSS at the very beginning
+    # Add comprehensive mobile compatibility fixes
     st.markdown("""
     <style>
         /* iOS Safari regex fix - disable problematic auto-linking */
@@ -909,11 +928,14 @@ def main():
             color: inherit !important;
         }
         
-        /* Prevent URL pattern detection */
+        /* Prevent URL pattern detection and regex issues */
         .stMarkdown {
             word-break: break-word;
             -webkit-user-select: text;
             user-select: text;
+            /* Disable automatic text processing that might cause regex issues */
+            -webkit-text-size-adjust: none;
+            text-size-adjust: none;
         }
         
         /* Fix for iOS rendering issues */
@@ -926,6 +948,19 @@ def main():
         * {
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+        }
+        
+        /* Additional mobile fixes */
+        .stChatMessage {
+            -webkit-transform: translateZ(0);
+            transform: translateZ(0);
+        }
+        
+        /* Prevent Safari from trying to parse regex-like patterns */
+        pre, code {
+            -webkit-user-select: text;
+            user-select: text;
+            white-space: pre-wrap;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -1134,18 +1169,30 @@ I can help you with:
 What would you like to know about your equipment?"""
             st.session_state.chat_history.append({"role": "assistant", "content": welcome_msg})
         
-        # Display chat history
+        # Display chat history with mobile-safe rendering
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
-                # Use st.write instead of st.markdown for iOS compatibility
-                st.write(msg["content"])
+                # Use st.text for safety-critical content to avoid markdown issues
+                content = msg["content"]
+                if "⚠️" in content or "SAFETY" in content.upper():
+                    # For safety messages, use multiple st.text calls to avoid parsing issues
+                    lines = content.split('\n')
+                    for line in lines:
+                        if line.strip():
+                            st.text(line)
+                        else:
+                            st.text('')  # Empty line for spacing
+                else:
+                    # Use st.write for other content
+                    st.write(content)
         
         # Chat input
         if prompt := st.chat_input("Ask about your equipment..."):
             # Add user message
             st.session_state.chat_history.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
-                st.write(prompt)
+                # Use st.text to avoid any markdown parsing issues with user input
+                st.text(prompt)
             
             # Generate response
             with st.chat_message("assistant"):
@@ -1231,18 +1278,4 @@ What would you like to know about your equipment?"""
                     error.display()
 
 if __name__ == "__main__":
-    main() response."
-                log_execution("🤖 Cortex Fallback Response", f"{len(initial_response.split())} words", time.time() - stage1_start)
-                
-                # Switch back to RETRIEVAL warehouse
-                session.sql("USE WAREHOUSE RETRIEVAL").collect()
-        else:
-            # Use Cortex directly
-            # Switch to CORTEX_WH only for LLM generation
-            session.sql("USE WAREHOUSE CORTEX_WH").collect()
-            
-            df = session.sql(
-                "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
-                params=[FALLBACK_MODEL, full_prompt]
-            ).collect()
-            initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a
+    main()
