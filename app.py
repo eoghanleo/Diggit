@@ -1,6 +1,5 @@
-import streamlit as st
-from snowflake.snowpark.context import get_active_session
-from snowflake.snowpark import Session
+import gradio as gr
+import os
 import time
 import json
 import uuid
@@ -10,13 +9,43 @@ import hashlib
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Any
 import re
-import os
 from groq import Groq
+from snowflake.snowpark.context import get_active_session
+from snowflake.snowpark import Session
 
+
+# ——— Configuration ———
+class AppConfig:
+    def __init__(self):
+        self.max_response_words = 300
+        self.context_window = 4
+        self.enable_logging = True
+        self.use_groq = True
+
+config = AppConfig()
+
+# ——— Global State Management ———
+class AppState:
+    def __init__(self):
+        self.property_id = None
+        self.chat_history = []
+        self.session_id = str(uuid.uuid4())
+        self.conversation_id = None
+        self.message_counter = 0
+        self.last_query_info = None
+        self.execution_log = []
+        self.performance_metrics = {
+            'response_times': [],
+            'retrieval_times': [],
+            'refinement_count': 0,
+            'total_requests': 0,
+            'errors': []
+        }
+
+# Global state instance
+app_state = AppState()
 
 # ——— Conversation Logging ———
-# To check the schema of the messages table in Snowflake, run:
-# DESC TABLE CHAT_MESSAGES;
 class ConversationLogger:
     """Minimal conversation logging using VARIANT for metadata."""
     def __init__(self, session: Session):
@@ -71,7 +100,6 @@ class ConversationLogger:
         if not conversation_id:
             return False
         message_id = str(uuid.uuid4())
-        # Get message order (1-based)
         try:
             count_sql = f"SELECT COUNT(*) as msg_count FROM {self.messages_table} WHERE CONVERSATION_ID = ?"
             count_result = self.session.sql(count_sql, params=[conversation_id]).collect()
@@ -112,87 +140,18 @@ class ConversationLogger:
         except Exception:
             pass
 
-    def get_conversation_history(self, property_id: int, limit: int = 10) -> List[Dict]:
-        query_sql = f"""
-        SELECT 
-            CONVERSATION_ID,
-            SESSION_ID,
-            START_TIME,
-            END_TIME,
-            STATUS
-        FROM {self.table_name}
-        WHERE PROPERTY_ID = ?
-        ORDER BY START_TIME DESC
-        LIMIT ?
-        """
-        try:
-            results = self.session.sql(query_sql, params=[property_id, limit]).collect()
-            def row_to_dict(row):
-                if hasattr(row, 'as_dict'):
-                    return row.as_dict()
-                return {
-                    "CONVERSATION_ID": getattr(row, "CONVERSATION_ID", None),
-                    "SESSION_ID": getattr(row, "SESSION_ID", None),
-                    "START_TIME": getattr(row, "START_TIME", None),
-                    "END_TIME": getattr(row, "END_TIME", None),
-                    "STATUS": getattr(row, "STATUS", None)
-                }
-            return [row_to_dict(row) for row in results]
-        except Exception:
-            return []
-
-    def get_conversation_messages(self, conversation_id: str) -> List[Dict]:
-        query_sql = f"""
-        SELECT 
-            MESSAGE_ORDER,
-            ROLE,
-            CONTENT,
-            PROPERTY_ID,
-            METADATA,
-            CREATED_AT
-        FROM {self.messages_table}
-        WHERE CONVERSATION_ID = ?
-        ORDER BY MESSAGE_ORDER
-        """
-        try:
-            results = self.session.sql(query_sql, params=[conversation_id]).collect()
-            def row_to_dict(row):
-                if hasattr(row, 'as_dict'):
-                    return row.as_dict()
-                return {
-                    "MESSAGE_ORDER": getattr(row, "MESSAGE_ORDER", None),
-                    "ROLE": getattr(row, "ROLE", None),
-                    "CONTENT": getattr(row, "CONTENT", None),
-                    "PROPERTY_ID": getattr(row, "PROPERTY_ID", None),
-                    "METADATA": getattr(row, "METADATA", None),
-                    "CREATED_AT": getattr(row, "CREATED_AT", None)
-                }
-            return [row_to_dict(row) for row in results]
-        except Exception:
-            return []
-
-
-# ——— App config ———
-st.set_page_config(
-    page_title="Plant Hire Equipment Assistant", 
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-
 # ——— Initialize Groq client ———
-@st.cache_resource
 def get_groq_client():
     """Initialize Groq client with API key."""
-    api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("groq", {}).get("api_key")
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        st.error("⚠️ Groq API key not found. Please set GROQ_API_KEY environment variable or add to Streamlit secrets.")
+        print("⚠️ Groq API key not found. Please set GROQ_API_KEY environment variable.")
         return None
     return Groq(api_key=api_key)
 
 groq_client = get_groq_client()
 
 # ——— Initialize Snowpark session ———
-@st.cache_resource
 def get_session():
     """Create and cache Snowpark session."""
     try:
@@ -201,112 +160,30 @@ def get_session():
     except:
         # Fallback for local development
         connection_parameters = {
-            "account": st.secrets["snowflake"]["account"],
-            "user": st.secrets["snowflake"]["user"],
-            "authenticator" : st.secrets["snowflake"]["authenticator"],
-            "private_key": st.secrets["snowflake"]["private_key"],
-            "role": st.secrets["snowflake"]["role"],
-            "warehouse": st.secrets["snowflake"]["warehouse"],
-            "database": st.secrets["snowflake"]["database"],
-            "schema": st.secrets["snowflake"]["schema"]
+            "account": os.getenv("SNOWFLAKE_ACCOUNT"),
+            "user": os.getenv("SNOWFLAKE_USER"),
+            "authenticator": os.getenv("SNOWFLAKE_AUTHENTICATOR"),
+            "private_key": os.getenv("SNOWFLAKE_PRIVATE_KEY"),
+            "role": os.getenv("SNOWFLAKE_ROLE"),
+            "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE"),
+            "database": os.getenv("SNOWFLAKE_DATABASE"),
+            "schema": os.getenv("SNOWFLAKE_SCHEMA")
         }
         return Session.builder.configs(connection_parameters).create()
 
 session = get_session()
-
-# ——— Initialize Conversation Logger ———
-@st.cache_resource
-def get_conversation_logger():
-    """Initialize conversation logger."""
-    return ConversationLogger(session)
-
-conversation_logger = get_conversation_logger()
+conversation_logger = ConversationLogger(session)
 
 # ——— Constants ———
-MODEL_NAME = 'llama3-70b-8192'  # Updated Groq model name (without context size)
-FALLBACK_MODEL = 'MIXTRAL-8X7B'  # Snowflake Cortex fallback
+MODEL_NAME = 'llama3-70b-8192'
+FALLBACK_MODEL = 'MIXTRAL-8X7B'
 EMBED_MODEL = 'SNOWFLAKE-ARCTIC-EMBED-L-V2.0'
 EMBED_FN = 'SNOWFLAKE.CORTEX.EMBED_TEXT_1024'
-WORD_THRESHOLD = 100  # Increased from 50 to 100
-TOP_K = 5  # Fixed value, no longer configurable
-SIMILARITY_THRESHOLD = 0.2  # Fixed value, no longer configurable
-
-# ——— Configuration ———
-if 'config' not in st.session_state:
-    st.session_state.config = {
-        'max_response_words': 300,  # Increased from 100 to 300
-        'context_window': 4,
-        'enable_logging': True,
-        'use_groq': True
-    }
-
-# ——— Performance Monitor ———
-class PerformanceMonitor:
-    def __init__(self):
-        if 'performance_metrics' not in st.session_state:
-            st.session_state.performance_metrics = {
-                'response_times': [],
-                'retrieval_times': [],
-                'refinement_count': 0,
-                'total_requests': 0,
-                'errors': []
-            }
-        self.metrics = st.session_state.performance_metrics
-    
-    def log_request(self, metrics: Dict[str, Any]):
-        self.metrics['response_times'].append(metrics.get('latency', 0))
-        self.metrics['retrieval_times'].append(metrics.get('retrieval_time', 0))
-        self.metrics['total_requests'] += 1
-        if metrics.get('used_refinement'):
-            self.metrics['refinement_count'] += 1
-        
-        # Keep only last 100 entries
-        if len(self.metrics['response_times']) > 100:
-            self.metrics['response_times'] = self.metrics['response_times'][-100:]
-            self.metrics['retrieval_times'] = self.metrics['retrieval_times'][-100:]
-    
-    def log_error(self, error_type: str, details: str):
-        self.metrics['errors'].append({
-            'timestamp': datetime.now().isoformat(),
-            'type': error_type,
-            'details': details
-        })
-        if len(self.metrics['errors']) > 50:
-            self.metrics['errors'] = self.metrics['errors'][-50:]
-    
-    def get_dashboard_metrics(self) -> Dict[str, Any]:
-        if not self.metrics['response_times']:
-            return {'status': 'No data yet'}
-        
-        return {
-            'avg_response_time': np.mean(self.metrics['response_times']),
-            'avg_retrieval_time': np.mean(self.metrics['retrieval_times']) if self.metrics['retrieval_times'] else 0,
-            'p95_response_time': np.percentile(self.metrics['response_times'], 95) if len(self.metrics['response_times']) > 10 else 0,
-            'refinement_rate': self.metrics['refinement_count'] / self.metrics['total_requests'] if self.metrics['total_requests'] > 0 else 0,
-            'total_requests': self.metrics['total_requests'],
-            'recent_errors': len(self.metrics['errors'])
-        }
-
-monitor = PerformanceMonitor()
-
-# ——— Error Handling ———
-class ChatError:
-    def __init__(self, error_type: str, user_message: str, technical_details: str = None):
-        self.error_type = error_type
-        self.user_message = user_message
-        self.technical_details = technical_details
-        monitor.log_error(error_type, technical_details or user_message)
-    
-    def display(self):
-        st.error(f"😔 {self.user_message}")
-        if self.technical_details:
-            with st.expander("Technical details"):
-                st.code(self.technical_details)
+WORD_THRESHOLD = 100
+TOP_K = 5
+SIMILARITY_THRESHOLD = 0.2
 
 # ——— Execution Logging ———
-if 'execution_log' not in st.session_state:
-    st.session_state.execution_log = []
-
 def log_execution(step: str, details: str = "", timing: float = None):
     """Log execution steps for debugging."""
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -316,16 +193,15 @@ def log_execution(step: str, details: str = "", timing: float = None):
         "details": details,
         "timing": f"{timing:.3f}s" if timing else ""
     }
-    st.session_state.execution_log.append(log_entry)
+    app_state.execution_log.append(log_entry)
     
-    if len(st.session_state.execution_log) > 50:
-        st.session_state.execution_log = st.session_state.execution_log[-50:]
+    if len(app_state.execution_log) > 50:
+        app_state.execution_log = app_state.execution_log[-50:]
 
-# ——— System Initialization ———
+# ——— System Optimization ———
 def optimize_warehouse():
     """Set warehouse for retrieval operations."""
     try:
-        # Use RETRIEVAL warehouse for all operations
         session.sql("USE WAREHOUSE RETRIEVAL").collect()
         session.sql("ALTER SESSION SET USE_CACHED_RESULT = TRUE").collect()
         session.sql("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 300").collect()
@@ -334,9 +210,8 @@ def optimize_warehouse():
         logging.error(f"Warehouse optimization failed: {e}")
         return False
 
-# Initialize warehouse on startup
-if 'warehouse_initialized' not in st.session_state:
-    st.session_state.warehouse_initialized = optimize_warehouse()
+# Initialize warehouse
+optimize_warehouse()
 
 # ——— System Prompt ———
 def get_system_prompt(property_id: int) -> str:
@@ -354,106 +229,39 @@ def get_system_prompt(property_id: int) -> str:
             ),
             "response_constraints": {
                 "format": "plain text only",
-                "length_limit": f"max {st.session_state.config['max_response_words']} words",
+                "length_limit": f"max {config.max_response_words} words",
                 "no_hallucination": "Only use information from the provided context",
                 "safety_first": "Always prioritize safety information when relevant",
                 "formatting": "Always format lists as bullet points with * or - symbols, and use proper line breaks for readability"
-            },
-            "examples": [
-                {
-                    "question": "How do I start the volkswagen golf TDI?",
-                    "context": "[No information about volkswagen golf TDI in the context]",
-                    "answer": "I'm sorry, I don't have that information in the equipment documentation."
-                }
-            ]
+            }
         }
     })
-
-# ——— Refinement Prompt ———
-EDITOR_PROMPT = json.dumps({
-    "role": "editor",
-    "task": "Make the response more concise while keeping all facts",
-    "rules": [
-        "Keep the professional, safety-focused tone",
-        "Preserve all factual information",
-        "Remove redundancy and filler",
-        "Maximum 50 words unless more detail is essential"
-    ]
-})
 
 # ——— Question Processing ———
 def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
     """Process and enrich the user question with smart context detection."""
-    # Simple enrichment - add equipment context
     enriched = f"Equipment inquiry for Plant Hire #{property_id}: {raw_q.strip()}"
     
-    # Smart context detection using entity tracking and explicit reference patterns
     if len(chat_history) > 1:
         raw_lower = raw_q.lower()
         
-        # 1. Check for explicit reference patterns that indicate follow-up
-        # Using simpler patterns that are more mobile-compatible
+        # Check for explicit reference patterns
         explicit_patterns = [
-            r'\b(it|this|that)\s+(is|was|does|can|will|should|would)',  # "how does it work", "what is this"
-            r'\bwhat\s+about\s+(it|this|that|them)\b',  # "what about it"
-            r'\b(tell|explain|show)\s+me\s+more\b',  # "tell me more"
-            r'\belse\s+about\b',  # "what else about"
-            r'\bthe\s+same\s+',  # "the same thing"
-            r'\balso\b.*\?',  # questions with "also"
-            r'^(and|but|so)\s+',  # starts with conjunctions
-            r'\b(how|why|when|where)\s+do\s+(i|you)\s+(use|turn|activate|access)\s+(it|this|that|them)\b'  # specific action questions
+            r'\b(it|this|that)\s+(is|was|does|can|will|should|would)',
+            r'\bwhat\s+about\s+(it|this|that|them)\b',
+            r'\b(tell|explain|show)\s+me\s+more\b',
+            r'\belse\s+about\b',
+            r'\bthe\s+same\s+',
+            r'\balso\b.*\?',
+            r'^(and|but|so)\s+',
+            r'\b(how|why|when|where)\s+do\s+(i|you)\s+(use|turn|activate|access)\s+(it|this|that|them)\b'
         ]
         
         has_explicit_reference = any(re.search(pattern, raw_lower) for pattern in explicit_patterns)
         
-        # 2. Entity/topic tracking - extract key nouns from previous exchange
-        if not has_explicit_reference and len(chat_history) >= 2:
-            # Get the last user question and assistant response
-            last_user_msg = next((msg['content'] for msg in reversed(chat_history[:-1]) if msg['role'] == 'user'), "")
-            last_assistant_msg = next((msg['content'] for msg in reversed(chat_history) if msg['role'] == 'assistant'), "")
-            
-            # Extract meaningful entities (nouns/topics) from previous exchange
-            # Focus on domain-specific terms that are likely to be referenced
-            entity_patterns = [
-                r'\b(excavator|digger|loader|bulldozer|crane|forklift|dumper|roller)\b',
-                r'\b(engine|hydraulic|fuel|oil|filter|battery|tire|track)\b',
-                r'\b(operator|driver|safety|helmet|vest|harness|seatbelt)\b',
-                r'\b(manual|instruction|procedure|checklist|inspection)\b',
-                r'\b(start|stop|emergency|shutdown|restart)\b',
-                r'\b(weight|capacity|reach|height|depth|angle)\b',
-                r'\b(terrain|ground|slope|mud|water|rock)\b',
-                r'\b(maintenance|service|repair|part|spare)\b',
-                r'\b(control|lever|pedal|button|switch|gauge)\b',
-                r'\b(attachment|bucket|hammer|drill|grapple)\b',
-                r'\b(transport|trailer|loading|unloading)\b',
-                r'\b(weather|rain|wind|temperature|visibility)\b'
-            ]
-            
-            # Find entities in previous messages
-            previous_entities = set()
-            for pattern in entity_patterns:
-                previous_entities.update(re.findall(pattern, last_user_msg.lower()))
-                previous_entities.update(re.findall(pattern, last_assistant_msg.lower()))
-            
-            # Check if current question mentions any previous entities
-            current_entities = set()
-            for pattern in entity_patterns:
-                current_entities.update(re.findall(pattern, raw_lower))
-            
-            # If there's entity overlap, it might be a follow-up
-            has_entity_overlap = bool(previous_entities & current_entities)
-        else:
-            has_entity_overlap = False
-        
-        # 3. Apply context only if we have strong signals
-        if has_explicit_reference or (has_entity_overlap and len(raw_q.split()) < 10):
-            # Get the most relevant previous content
-            last_exchange = chat_history[-2:] if len(chat_history) >= 2 else chat_history
-            last_content = last_exchange[-1]['content']
-            
-            # Only add context if the last message was substantial and not a greeting
-            if len(last_content) > 30 and not any(greeting in last_content.lower() for greeting in ['welcome', 'hello', 'hi there']):
-                # Extract the most relevant part of the previous message
+        if has_explicit_reference and len(chat_history) >= 2:
+            last_content = chat_history[-1].get('content', '')
+            if len(last_content) > 30:
                 context_preview = last_content[:50].replace('\n', ' ').strip()
                 if not context_preview.endswith('.'):
                     context_preview += '...'
@@ -462,17 +270,15 @@ def process_question(raw_q: str, property_id: int, chat_history: list) -> str:
     
     return enriched
 
-# ——— Dual Retrieval System ———
+# ——— Retrieval Functions ———
 def retrieve_safety_information(enriched_q: str, property_id: int):
     """Retrieve safety-related information for the query."""
     try:
         log_execution("🛡️ Starting Safety Retrieval", f"Equipment {property_id}")
         start_time = time.time()
         
-        # Ensure we're using RETRIEVAL warehouse
         session.sql("USE WAREHOUSE RETRIEVAL").collect()
 
-        # Pure semantic safety retrieval
         safety_sql = f"""
         SELECT
             CHUNK AS snippet,
@@ -511,10 +317,8 @@ def retrieve_operational_information(enriched_q: str, property_id: int):
         log_execution("🔧 Starting Operational Retrieval", f"Equipment {property_id}")
         start_time = time.time()
         
-        # Ensure we're using RETRIEVAL warehouse
         session.sql("USE WAREHOUSE RETRIEVAL").collect()
 
-        # Pure semantic operational retrieval
         operational_sql = f"""
         SELECT
             CHUNK AS snippet,
@@ -547,7 +351,7 @@ def retrieve_operational_information(enriched_q: str, property_id: int):
         log_execution("❌ Operational Retrieval error", str(e))
         return []
 
-# ——— Answer Generation ———
+# ——— Response Generation ———
 def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int):
     """Generate answer with dual retrieval (safety + operational)."""
     try:
@@ -555,18 +359,13 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         
         enriched_q = process_question(raw_question, property_id, chat_history)
         
-        # Dual retrieval: Safety first, then operational
         retrieval_start = time.time()
         
-        # Get safety information
         safety_results = retrieve_safety_information(enriched_q, property_id)
-        
-        # Get operational information
         operational_results = retrieve_operational_information(enriched_q, property_id)
         
         retrieval_time = time.time() - retrieval_start
         
-        # Combine and parse results
         all_results = safety_results + operational_results
         
         log_execution("📊 Chunk Summary", f"Safety: {len(safety_results)}, Operational: {len(operational_results)}, Total: {len(all_results)}")
@@ -578,7 +377,6 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         search_types = []
         
         for row in all_results:
-            # Handle both dictionary-style and attribute-style access
             if hasattr(row, 'SNIPPET'):
                 snippets.append(row.SNIPPET)
                 chunk_idxs.append(row.CHUNK_INDEX)
@@ -591,37 +389,25 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
                 paths.append(row.get('PATH', row.get('path', '')))
                 similarities.append(row.get('SIMILARITY', row.get('similarity', 0)))
                 search_types.append(row.get('SEARCH_TYPE', row.get('search_type', '')))
-            else:
-                # If row is a list/tuple, assume order: snippet, chunk_index, path, similarity, search_type
-                if len(row) >= 5:
-                    snippets.append(row[0])
-                    chunk_idxs.append(row[1])
-                    paths.append(row[2])
-                    similarities.append(row[3])
-                    search_types.append(row[4])
         
         if not snippets:
             fallback = "I don't have specific information about that equipment. Please contact your equipment supplier or safety officer for assistance."
             return enriched_q, fallback, [], [], [], [], [], False, 0, retrieval_time
         
-        # Build prompt with safety-first approach
+        # Build context
         context_section = f"Equipment Information:\n"
         
-        # Add safety information first if available
         safety_snippets = [s for i, s in enumerate(snippets) if search_types[i] == 'safety']
         if safety_snippets:
             context_section += f"\n[SAFETY INFORMATION]:\n"
-            for i, snippet in enumerate(safety_snippets, 1):
+            for snippet in safety_snippets:
                 context_section += f"{snippet}\n"
         
-        # Add operational information
         operational_snippets = [s for i, s in enumerate(snippets) if search_types[i] == 'operational']
         if operational_snippets:
             context_section += f"\n[OPERATIONAL INFORMATION]:\n"
-            for i, snippet in enumerate(operational_snippets, 1):
+            for snippet in operational_snippets:
                 context_section += f"{snippet}\n"
-        
-        log_execution("📤 LLM Context", f"Safety chunks: {len(safety_snippets)}, Operational chunks: {len(operational_snippets)}, Total sent to LLM: {len(safety_snippets) + len(operational_snippets)}")
         
         system_prompt = get_system_prompt(property_id)
         full_prompt = (
@@ -634,17 +420,13 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         # Generate response
         stage1_start = time.time()
         
-        # Try Groq first, fallback to Cortex if needed
-        use_groq = st.session_state.config.get('use_groq', True)
-        if use_groq and groq_client:
+        if config.use_groq and groq_client:
             try:
-                # Convert prompt to Groq format
                 messages = [
                     {"role": "system", "content": "You are a helpful, knowledgeable plant hire equipment expert. Answer only the most recent equipment inquiry using the provided information. Keep responses clear and professional, prioritize safety information when relevant, max 300 words. IMPORTANT: Always format lists as bullet points with * symbols and use proper line breaks for readability."},
                     {"role": "user", "content": f"Equipment Operator: {raw_question}\n\n{context_section}\n\nBased on the equipment information above, please answer the operator's question."}
                 ]
                 
-                # Call Groq API
                 completion = groq_client.chat.completions.create(
                     model=MODEL_NAME,
                     messages=messages,
@@ -658,11 +440,7 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
                 log_execution("🚀 Groq Response", f"Tokens: {completion.usage.total_tokens}", time.time() - stage1_start)
                 
             except Exception as e:
-                # Fallback to Cortex - DO NOT try Groq again with different model
                 log_execution("⚠️ Groq failed, using Cortex", str(e))
-                stage1_start = time.time()  # Reset timer for Cortex
-                
-                # Switch to CORTEX_WH only for LLM generation
                 session.sql("USE WAREHOUSE CORTEX_WH").collect()
                 
                 df = session.sql(
@@ -672,11 +450,8 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
                 initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a response."
                 log_execution("🤖 Cortex Fallback Response", f"{len(initial_response.split())} words", time.time() - stage1_start)
                 
-                # Switch back to RETRIEVAL warehouse
                 session.sql("USE WAREHOUSE RETRIEVAL").collect()
         else:
-            # Use Cortex directly
-            # Switch to CORTEX_WH only for LLM generation
             session.sql("USE WAREHOUSE CORTEX_WH").collect()
             
             df = session.sql(
@@ -686,15 +461,9 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
             initial_response = df[0].RESPONSE.strip() if df else "I'm having trouble generating a response."
             log_execution("🤖 LLM Response", f"{len(initial_response.split())} words", time.time() - stage1_start)
             
-            # Switch back to RETRIEVAL warehouse
             session.sql("USE WAREHOUSE RETRIEVAL").collect()
         
-        stage1_time = time.time() - stage1_start
         word_count = len(initial_response.split())
-        
-        log_execution("🤖 LLM Response", f"{word_count} words", stage1_time)
-        
-        # Format response with safety information first
         formatted_response = format_response_with_safety(initial_response, safety_snippets, operational_snippets, raw_question)
         
         return (enriched_q, formatted_response, snippets, chunk_idxs, paths, 
@@ -704,522 +473,310 @@ def get_enhanced_answer(chat_history: list, raw_question: str, property_id: int)
         log_execution("❌ Generation Error", str(e))
         return raw_question, "I'm experiencing technical difficulties. Please try again.", [], [], [], [], [], False, 0, 0
 
-def format_main_response(response: str) -> str:
-    """Format main response to ensure proper bullet points and line breaks."""
-    # Look for patterns that indicate lists and convert them to bullet points
-    lines = response.split('\n')
-    formatted_lines = []
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            formatted_lines.append('')
-            continue
-            
-        # Check if line contains list indicators
-        if re.match(r'^\d+\.', line):  # Numbered list
-            # Convert to bullet point
-            line = re.sub(r'^\d+\.\s*', '* ', line)
-        elif re.match(r'^\*', line):  # Already bullet point
-            pass  # Keep as is
-        elif re.match(r'^-', line):  # Dash list
-            line = re.sub(r'^-\s*', '* ', line)
-        elif ':' in line and any(keyword in line.lower() for keyword in ['include', 'possible', 'causes', 'reasons', 'steps', 'check']):
-            # This might be a list header, keep as is
-            pass
-        else:
-            # Check if this line contains multiple items separated by common patterns
-            if any(separator in line for separator in ['•', '·', '▪', '▫']):
-                # Replace bullet-like characters with standard *
-                line = re.sub(r'[•·▪▫]\s*', '* ', line)
-        
-        formatted_lines.append(line)
-    
-    return '\n'.join(formatted_lines)
-
 def format_response_with_safety(response: str, safety_snippets: list, operational_snippets: list, question: str) -> str:
-    """Format response with safety information first and attention-grabbing emojis."""
-    # Determine if we have relevant safety information
+    """Format response with safety information first."""
     has_relevant_safety = len(safety_snippets) > 0
     
-    # Check if question indicates uncertainty or problems
     uncertainty_keywords = ['wrong', 'problem', 'issue', 'error', 'broken', 'not working', 'trouble', 'help', 'unsure', 'confused', 'what should', 'how do i']
     question_lower = question.lower()
     indicates_uncertainty = any(keyword in question_lower for keyword in uncertainty_keywords)
     
     formatted_parts = []
     
-    # Add safety information first if available
     if has_relevant_safety:
-        # Process safety information through separate LLM call
-        processed_safety = process_safety_information(safety_snippets, question)
-        if processed_safety:
-            formatted_parts.append("🛡️ **SAFETY FIRST:**")
-            formatted_parts.append(processed_safety)
-            formatted_parts.append("")  # Empty line for spacing
-    
-    # Add general safety warning if no specific safety info but uncertainty indicated
+        formatted_parts.append("🛡️ **SAFETY FIRST:**")
+        formatted_parts.append("⚠️ Always prioritize safety when operating equipment.")
+        formatted_parts.append("")
     elif indicates_uncertainty and not has_relevant_safety:
         formatted_parts.append("🛡️ **SAFETY REMINDER:**")
         formatted_parts.append("⚠️ If you're unsure about equipment operation or experiencing issues, stop work immediately and contact your supervisor or safety officer.")
-        formatted_parts.append("")  # Empty line for spacing
+        formatted_parts.append("")
     
-    # Add the main response
-    formatted_parts.append(format_main_response(response))
+    formatted_parts.append(response)
     
     return "\n".join(formatted_parts)
 
-def process_safety_information(safety_snippets: list, question: str) -> str:
-    """Process safety information through LLM to extract relevant safety points."""
+# ——— Gradio Interface Functions ———
+def connect_equipment(equipment_id):
+    """Connect to specific equipment."""
     try:
-        # Combine safety snippets
-        safety_content = "\n\n".join(safety_snippets)
+        eq_id = int(equipment_id)
+        app_state.property_id = eq_id
+        app_state.chat_history = []
+        app_state.message_counter = 0
         
-        # Create focused system prompt for safety processing
-        safety_system_prompt = "You are a safety expert for construction equipment. Your task is to extract ONLY relevant safety information from the provided content.\n\nIMPORTANT RULES:\n1. Extract ONLY safety-related information (warnings, hazards, protective measures, emergency procedures)\n2. IGNORE: warranty information, addresses, contact details, administrative procedures\n3. Focus on: operational safety, personal protective equipment, hazard warnings, emergency procedures\n4. Keep each safety point concise (1-2 sentences max)\n5. Use clear, direct language\n6. Maximum 3 safety points total\n\nFormat your response as bullet points with ⚠️ emoji, like:\n⚠️ [Safety point 1]\n⚠️ [Safety point 2]\n⚠️ [Safety point 3]\n\nIf no relevant safety information is found, respond with \"No relevant safety information found.\""
+        if config.enable_logging:
+            app_state.conversation_id = conversation_logger.start_conversation(
+                eq_id, app_state.session_id
+            )
+        
+        welcome_msg = f"""Welcome! I'm your equipment assistant for **Equipment #{eq_id}**.
 
-        # Create user prompt with context
-        safety_user_prompt = f"""Question: {question}
+I can help you with:
+- 🛡️ **Safety procedures** and warnings
+- 🔧 **Operating instructions** and controls
+- 🔍 **Troubleshooting** common issues
+- 📋 **Maintenance** requirements
+- ⚠️ **Emergency procedures**
 
-Safety Content:
-{safety_content}
+What would you like to know about your equipment?"""
+        
+        app_state.chat_history.append({"role": "assistant", "content": welcome_msg})
+        
+        return (
+            gr.update(visible=False),  # Hide equipment selection
+            gr.update(visible=True),   # Show chat interface
+            [[None, welcome_msg]],     # Initialize chatbot with welcome message
+            f"Connected to Equipment #{eq_id}"  # Update status
+        )
+    except ValueError:
+        return (
+            gr.update(visible=True),   # Keep equipment selection visible
+            gr.update(visible=False),  # Hide chat interface
+            [],                        # Empty chatbot
+            "Please enter a valid equipment ID number"
+        )
 
-Extract only the safety information that is relevant to the question or general equipment safety."""
+def chat_with_equipment(message, history):
+    """Handle chat messages with the equipment assistant."""
+    if not app_state.property_id:
+        return history + [[message, "Please connect to an equipment first."]], ""
+    
+    if not message.strip():
+        return history, ""
+    
+    # Add user message to app state
+    app_state.chat_history.append({"role": "user", "content": message})
+    
+    try:
+        # Generate response
+        start_time = time.time()
+        
+        (enriched_q, response, snippets, chunk_idxs, paths, 
+         similarities, search_types, used_refinement, word_count, retrieval_time) = get_enhanced_answer(
+            app_state.chat_history, 
+            message, 
+            app_state.property_id
+        )
+        
+        total_time = time.time() - start_time
+        
+        # Add assistant response to app state
+        app_state.chat_history.append({"role": "assistant", "content": response})
+        app_state.message_counter += 1
+        
+        # Log the conversation
+        if config.enable_logging and app_state.conversation_id:
+            conversation_logger.log_message(
+                app_state.conversation_id,
+                "user",
+                message,
+                metadata={"enriched": enriched_q},
+                property_id=app_state.property_id
+            )
+            
+            conversation_logger.log_message(
+                app_state.conversation_id,
+                "assistant",
+                response,
+                metadata={
+                    "word_count": word_count,
+                    "retrieval_time": retrieval_time,
+                    "total_time": total_time,
+                    "snippets_used": len(snippets),
+                    "used_refinement": used_refinement
+                },
+                property_id=app_state.property_id
+            )
+        
+        # Store query info for debugging
+        app_state.last_query_info = {
+            "question": message,
+            "enriched": enriched_q,
+            "response": response,
+            "snippets": snippets,
+            "paths": paths,
+            "similarities": similarities,
+            "search_types": search_types,
+            "timing": {
+                "retrieval": retrieval_time,
+                "total": total_time
+            }
+        }
+        
+        # Update history for display
+        history = history + [[message, response]]
+        
+        return history, ""
+        
+    except Exception as e:
+        error_msg = f"I encountered an error while processing your request: {str(e)}"
+        history = history + [[message, error_msg]]
+        return history, ""
 
-        # Try Groq first
-        use_groq = st.session_state.config.get('use_groq', True)
-        if use_groq and groq_client:
-            try:
-                messages = [
-                    {"role": "system", "content": safety_system_prompt},
-                    {"role": "user", "content": safety_user_prompt}
-                ]
-                
-                completion = groq_client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    temperature=0.1,  # Lower temperature for more focused extraction
-                    max_tokens=300,  # Increased from 150 to 300
-                    top_p=0.9,
-                    stream=False
+def switch_equipment():
+    """Switch to a different equipment."""
+    # End current conversation
+    if app_state.conversation_id:
+        conversation_logger.end_conversation(app_state.conversation_id)
+    
+    # Reset state
+    app_state.property_id = None
+    app_state.chat_history = []
+    app_state.conversation_id = None
+    app_state.message_counter = 0
+    
+    return (
+        gr.update(visible=True),   # Show equipment selection
+        gr.update(visible=False),  # Hide chat interface
+        [],                        # Clear chatbot
+        "Disconnected. Please select equipment."
+    )
+
+def get_debug_info():
+    """Get debug information for display."""
+    if not app_state.last_query_info:
+        return "No query information available yet."
+    
+    info = app_state.last_query_info
+    timing = info['timing']
+    
+    debug_text = f"""
+**Last Query Performance:**
+- Retrieval Time: {timing['retrieval']:.2f}s
+- Total Response Time: {timing['total']:.2f}s
+
+**Retrieved Chunks:** {len(info['snippets'])}
+"""
+    
+    for i, (snippet, sim, search_type, path) in enumerate(zip(
+        info['snippets'], info['similarities'], info['search_types'], info['paths']
+    )):
+        debug_text += f"\n**Chunk {i+1} - {search_type.title()}**\n"
+        debug_text += f"Score: {sim:.3f}\n"
+        debug_text += f"Source: {path}\n"
+        preview = snippet[:150] + "..." if len(snippet) > 150 else snippet
+        debug_text += f"Content: {preview}\n"
+    
+    return debug_text
+
+# ——— Gradio Interface ———
+def create_interface():
+    with gr.Blocks(title="Plant Hire Equipment Assistant", theme=gr.themes.Soft()) as demo:
+        gr.Markdown("# 🚜 Plant Hire Equipment Assistant")
+        
+        # Status display
+        status_display = gr.Textbox(
+            value="Please enter equipment ID to connect",
+            label="Status",
+            interactive=False
+        )
+        
+        # Equipment selection interface
+        with gr.Group(visible=True) as equipment_selection:
+            gr.Markdown("### Connect to Your Equipment")
+            with gr.Row():
+                equipment_id_input = gr.Textbox(
+                    label="Equipment ID",
+                    placeholder="e.g., 2",
+                    value="2"
                 )
-                
-                safety_response = completion.choices[0].message.content.strip()
-                log_execution("🛡️ Safety Processing", f"Groq safety extraction completed")
-                
-            except Exception as e:
-                # Fallback to Cortex
-                log_execution("⚠️ Safety processing Groq failed, using Cortex", str(e))
-                safety_response = process_safety_with_cortex(safety_system_prompt, safety_user_prompt)
-        else:
-            # Use Cortex directly
-            safety_response = process_safety_with_cortex(safety_system_prompt, safety_user_prompt)
+                connect_btn = gr.Button("Connect to Equipment", variant="primary")
         
-        # Clean up response
-        if safety_response and safety_response.lower() != "no relevant safety information found.":
-            # Ensure proper formatting with line breaks
-            formatted_safety = format_safety_response(safety_response)
-            return formatted_safety
-        else:
-            return ""
-            
-    except Exception as e:
-        log_execution("❌ Safety processing error", str(e))
-        return ""
-
-def process_safety_with_cortex(system_prompt: str, user_prompt: str) -> str:
-    """Process safety information using Cortex as fallback."""
-    try:
-        # Switch to CORTEX_WH for LLM generation
-        session.sql("USE WAREHOUSE CORTEX_WH").collect()
-        
-        full_prompt = f"{system_prompt}\n\n{user_prompt}"
-        
-        df = session.sql(
-            "SELECT SNOWFLAKE.CORTEX.COMPLETE(?, ?) AS response",
-            params=[FALLBACK_MODEL, full_prompt]
-        ).collect()
-        
-        safety_response = df[0].RESPONSE.strip() if df else ""
-        log_execution("🛡️ Safety Processing", f"Cortex safety extraction completed")
-        
-        # Switch back to RETRIEVAL warehouse
-        session.sql("USE WAREHOUSE RETRIEVAL").collect()
-        
-        return safety_response
-        
-    except Exception as e:
-        log_execution("❌ Cortex safety processing error", str(e))
-        # Switch back to RETRIEVAL warehouse
-        session.sql("USE WAREHOUSE RETRIEVAL").collect()
-        return ""
-
-def format_safety_response(safety_response: str) -> str:
-    """Format safety response with proper line breaks and indentation."""
-    # Split by lines and clean up
-    lines = safety_response.strip().split('\n')
-    formatted_lines = []
-    
-    for line in lines:
-        line = line.strip()
-        if line:
-            # If line starts with ⚠️, keep it as is
-            if line.startswith('⚠️'):
-                formatted_lines.append(line)
-            # If line doesn't start with ⚠️ but contains safety content, add ⚠️
-            elif any(keyword in line.lower() for keyword in ['safety', 'danger', 'hazard', 'warning', 'caution', 'emergency', 'protective']):
-                formatted_lines.append(f"⚠️ {line}")
-            # Otherwise, skip non-safety lines
-            else:
-                continue
-    
-    # Join with proper line breaks
-    return '\n'.join(formatted_lines)
-
-# ——— Stream Response ———
-def stream_response(response: str, placeholder):
-    """Simulate streaming for better UX while preserving markdown formatting."""
-    # Split by lines to preserve formatting
-    lines = response.split('\n')
-    streamed_lines = []
-    
-    for line in lines:
-        # For each line, stream it character by character to maintain formatting
-        streamed_line = ""
-        for char in line:
-            streamed_line += char
-            # Update the display with all lines so far
-            display_content = '\n'.join(streamed_lines + [streamed_line + "▌"])
-            placeholder.markdown(display_content)
-            time.sleep(0.01)  # Faster character streaming
-        
-        # Add the completed line
-        streamed_lines.append(line)
-        
-        # Update display without cursor for completed line
-        display_content = '\n'.join(streamed_lines)
-        placeholder.markdown(display_content)
-        time.sleep(0.02)  # Brief pause between lines
-    
-    # Final display without cursor
-    placeholder.markdown(response)
-
-# ——— Main App ———
-def main():
-    # Initialize session state
-    if 'property_id' not in st.session_state:
-        st.session_state.property_id = None
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    if 'session_id' not in st.session_state:
-        st.session_state.session_id = str(uuid.uuid4())
-    if 'conversation_id' not in st.session_state:
-        st.session_state.conversation_id = None
-    if 'message_counter' not in st.session_state:
-        st.session_state.message_counter = 0
-    if 'last_query_info' not in st.session_state:
-        st.session_state.last_query_info = None
-    
-    # Sidebar
-    with st.sidebar:
-        st.write("📊 System Information")
-        
-        # Equipment switcher (keeping property_id field name)
-        if st.session_state.property_id:
-            if st.button("🔄 Switch Equipment", type="secondary"):
-                # End current conversation
-                if st.session_state.conversation_id:
-                    conversation_logger.end_conversation(st.session_state.conversation_id)
-                # Reset state
-                st.session_state.property_id = None
-                st.session_state.chat_history = []
-                st.session_state.conversation_id = None
-                st.session_state.message_counter = 0
-                st.rerun()
-        
-        # Show current equipment
-        if st.session_state.property_id:
-            st.info(f"🚜 Equipment #{st.session_state.property_id}")
-        
-        # Last Query Performance (New section)
-        if st.session_state.last_query_info:
-            with st.expander("⏱️ Last Query Performance", expanded=True):
-                timing = st.session_state.last_query_info['timing']
-                
-                # Display timing metrics
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("📥 Retrieval Time", f"{timing['retrieval']:.2f}s")
-                with col2:
-                    st.metric("🤖 LLM Time", f"{timing.get('llm_time', timing['total'] - timing['retrieval']):.2f}s")
-                
-                st.metric("⏱️ Total Response Time", f"{timing['total']:.2f}s")
-                
-                # Model used
-                if 'model_used' in timing:
-                    st.info(f"🔧 Model: {timing['model_used']}")
-        
-        # Retrieved Chunks (New section)
-        if st.session_state.last_query_info and st.session_state.last_query_info.get('snippets'):
-            with st.expander("📄 Retrieved Chunks", expanded=True):
-                snippets = st.session_state.last_query_info['snippets']
-                similarities = st.session_state.last_query_info['similarities']
-                search_types = st.session_state.last_query_info['search_types']
-                paths = st.session_state.last_query_info['paths']
-                
-                for i, (snippet, sim, search_type, path) in enumerate(zip(snippets, similarities, search_types, paths)):
-                    # Color code by search type
-                    if search_type == 'safety':
-                        st.markdown(f"**🛡️ Chunk {i+1} - Safety ({search_type})**")
-                        color = "#ff6b6b"  # Red for safety
-                    else:
-                        st.markdown(f"**🔧 Chunk {i+1} - Operational ({search_type})**")
-                        color = "#4ecdc4"  # Teal for operational
-                    
-                    # Show similarity score with color
-                    st.markdown(f"<span style='color: {color}'>Score: {sim:.3f}</span>", unsafe_allow_html=True)
-                    
-                    # Show source file
-                    st.text(f"📁 {path}")
-                    
-                    # Show snippet preview (truncated)
-                    preview = snippet[:150] + "..." if len(snippet) > 150 else snippet
-                    st.text_area(f"Content {i+1}", preview, height=80, key=f"chunk_{i}")
-                    st.divider()
-        
-        # Execution Log (Improved)
-        with st.expander("🐛 Execution Log", expanded=False):
-            if st.button("Clear Logs"):
-                st.session_state.execution_log = []
-                st.rerun()
-            
-            if st.session_state.execution_log:
-                # Display logs in reverse chronological order
-                for log in reversed(st.session_state.execution_log[-20:]):  # Show last 20 logs
-                    # Format log entry with better styling
-                    time_str = f"[{log['timestamp']}]"
-                    step_str = log['step']
-                    
-                    # Color code different types of logs
-                    if "✅" in step_str:
-                        color = "green"
-                    elif "❌" in step_str:
-                        color = "red"
-                    elif "⚠️" in step_str:
-                        color = "orange"
-                    elif "🔧" in step_str or "🛡️" in step_str:
-                        color = "blue"
-                    else:
-                        color = "gray"
-                    
-                    # Display main log line
-                    log_line = f"{time_str} {step_str}"
-                    if log['timing']:
-                        log_line += f" ({log['timing']})"
-                    
-                    st.markdown(f"<span style='color: {color}; font-family: monospace; font-size: 0.85em'>{log_line}</span>", unsafe_allow_html=True)
-                    
-                    # Display details if present
-                    if log['details']:
-                        st.markdown(f"<span style='color: gray; font-family: monospace; font-size: 0.8em; margin-left: 20px'>└─ {log['details']}</span>", unsafe_allow_html=True)
-            else:
-                st.text("No logs yet")
-        
-        # Configuration section
-        with st.expander("⚙️ Settings", expanded=False):
-            st.session_state.config['enable_logging'] = st.checkbox(
-                "Enable conversation logging", 
-                value=st.session_state.config['enable_logging']
-            )
-            
-            st.session_state.config['use_groq'] = st.checkbox(
-                "Use Groq API (faster)", 
-                value=st.session_state.config.get('use_groq', True),
-                help="When enabled, uses Groq API for faster responses. Falls back to Cortex if unavailable."
-            )
-        
-        # Performance metrics (Overall)
-        with st.expander("📊 Overall Performance", expanded=False):
-            metrics = monitor.get_dashboard_metrics()
-            if 'status' not in metrics:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Avg Response", f"{metrics['avg_response_time']:.2f}s")
-                    st.metric("Total Queries", metrics['total_requests'])
-                    if metrics.get('avg_llm_time', 0) > 0:
-                        st.metric("Avg LLM Time", f"{metrics['avg_llm_time']:.2f}s")
-                with col2:
-                    st.metric("Avg Retrieval", f"{metrics['avg_retrieval_time']:.2f}s")
-                    st.metric("Recent Errors", metrics['recent_errors'])
-                    if metrics.get('p95_response_time', 0) > 0:
-                        st.metric("P95 Response", f"{metrics['p95_response_time']:.2f}s")
-            else:
-                st.info(metrics['status'])
-        
-        # Conversation history
-        if st.session_state.property_id and st.session_state.config['enable_logging']:
-            with st.expander("📜 Conversation History", expanded=False):
-                history = conversation_logger.get_conversation_history(st.session_state.property_id, limit=5)
-                if history:
-                    for conv in history:
-                        start_time = conv.get('START_TIME', 'Unknown')
-                        status = conv.get('STATUS', 'Unknown')
-                        conv_id = conv.get('CONVERSATION_ID', 'Unknown')
-                        
-                        if st.button(f"📅 {start_time} ({status})", key=f"conv_{conv_id}"):
-                            messages = conversation_logger.get_conversation_messages(conv_id)
-                            if messages:
-                                st.write("**Conversation Messages:**")
-                                for msg in messages:
-                                    role = msg.get('ROLE', 'Unknown')
-                                    content = msg.get('CONTENT', 'No content')
-                                    st.write(f"**{role.title()}:** {content}")
-                else:
-                    st.text("No conversation history")
-                    
-    # Main interface
-    if not st.session_state.property_id:
-        # Equipment selection screen
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            # Center the title using CSS
-            st.markdown(
-                "<h1 style='text-align: center;'>🚜 Plant Hire Equipment Assistant</h1>", 
-                unsafe_allow_html=True
-            )
-            st.markdown("<h3 style='text-align: center;'>Welcome! Let's get you connected to your equipment.</h3>", unsafe_allow_html=True)
-            
-            st.markdown("#### Enter Equipment ID")
-            
-            # Manual entry option
-            manual_id = st.text_input("Equipment ID", placeholder="e.g., 2", value="2")
-            if st.button("Connect to Equipment", type="primary", disabled=not manual_id):
-                try:
-                    eq_id = int(manual_id)
-                    st.session_state.property_id = eq_id
-                    # Start new conversation
-                    if st.session_state.config['enable_logging']:
-                        st.session_state.conversation_id = conversation_logger.start_conversation(
-                            eq_id, st.session_state.session_id
-                        )
-                    st.rerun()
-                except ValueError:
-                    st.error("Please enter a valid equipment ID number")
-    
-    else:
         # Chat interface
-        st.title("🚜 Plant Hire Equipment Assistant")
-        
-        # Welcome message for new conversations
-        if not st.session_state.chat_history:
-            welcome_msg = f"""
-            Welcome! I'm your equipment assistant for **Equipment #{st.session_state.property_id}**.
-            
-            I can help you with:
-            - 🛡️ **Safety procedures** and warnings
-            - 🔧 **Operating instructions** and controls
-            - 🔍 **Troubleshooting** common issues
-            - 📋 **Maintenance** requirements
-            - ⚠️ **Emergency procedures**
-            
-            What would you like to know about your equipment?
-            """
-            st.session_state.chat_history.append({"role": "assistant", "content": welcome_msg})
-        
-        # Display chat history
-        for msg in st.session_state.chat_history:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
-        
-        # Chat input
-        if prompt := st.chat_input("Ask about your equipment..."):
-            # Add user message
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.write(prompt)
-            
-            # Generate response
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                
-                try:
-                    # Show thinking indicator
-                    with st.spinner("Checking equipment information..."):
-                        start_time = time.time()
-                        
-                        # Get answer with dual retrieval
-                        (enriched_q, response, snippets, chunk_idxs, paths, 
-                         similarities, search_types, used_refinement, word_count, retrieval_time) = get_enhanced_answer(
-                            st.session_state.chat_history, 
-                            prompt, 
-                            st.session_state.property_id
-                        )
-                        
-                        total_time = time.time() - start_time
-                    
-                    # Stream the response
-                    stream_response(response, message_placeholder)
-                    
-                    # Add to chat history
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
-                    st.session_state.message_counter += 1
-                    
-                    # Log the conversation
-                    if st.session_state.config['enable_logging'] and st.session_state.conversation_id:
-                        # Log user message
-                        conversation_logger.log_message(
-                            st.session_state.conversation_id,
-                            "user",
-                            prompt,
-                            metadata={"enriched": enriched_q},
-                            property_id=st.session_state.property_id
-                        )
-                        
-                        # Log assistant response
-                        conversation_logger.log_message(
-                            st.session_state.conversation_id,
-                            "assistant",
-                            response,
-                            metadata={
-                                "word_count": word_count,
-                                "retrieval_time": retrieval_time,
-                                "total_time": total_time,
-                                "snippets_used": len(snippets),
-                                "used_refinement": used_refinement
-                            },
-                            property_id=st.session_state.property_id
-                        )
-                    
-                    # Store query info for debugging
-                    st.session_state.last_query_info = {
-                        "question": prompt,
-                        "enriched": enriched_q,
-                        "response": response,
-                        "snippets": snippets,
-                        "paths": paths,
-                        "similarities": similarities,
-                        "search_types": search_types,
-                        "timing": {
-                            "retrieval": retrieval_time,
-                            "total": total_time
-                        }
-                    }
-                    
-                    # Log performance metrics
-                    monitor.log_request({
-                        'latency': total_time,
-                        'retrieval_time': retrieval_time,
-                        'used_refinement': used_refinement,
-                        'word_count': word_count
-                    })
-                
-                except Exception as e:
-                    error = ChatError(
-                        error_type="generation_error",
-                        user_message="I encountered an error while processing your request. Please try again.",
-                        technical_details=str(e)
+        with gr.Group(visible=False) as chat_interface:
+            with gr.Row():
+                with gr.Column(scale=3):
+                    chatbot = gr.Chatbot(
+                        height=500,
+                        label="Equipment Assistant Chat"
                     )
-                    error.display()
+                    with gr.Row():
+                        msg_input = gr.Textbox(
+                            placeholder="Ask about your equipment...",
+                            label="Your Message",
+                            scale=4
+                        )
+                        send_btn = gr.Button("Send", variant="primary", scale=1)
+                
+                with gr.Column(scale=1):
+                    switch_btn = gr.Button("🔄 Switch Equipment", variant="secondary")
+                    
+                    with gr.Accordion("Debug Information", open=False):
+                        debug_output = gr.Markdown("No debug information available yet.")
+                        refresh_debug_btn = gr.Button("Refresh Debug Info")
+                    
+                    with gr.Accordion("Settings", open=False):
+                        logging_checkbox = gr.Checkbox(
+                            label="Enable conversation logging",
+                            value=True
+                        )
+                        groq_checkbox = gr.Checkbox(
+                            label="Use Groq API (faster)",
+                            value=True
+                        )
+        
+        # Event handlers
+        connect_btn.click(
+            connect_equipment,
+            inputs=[equipment_id_input],
+            outputs=[equipment_selection, chat_interface, chatbot, status_display]
+        )
+        
+        def handle_message(message, history):
+            return chat_with_equipment(message, history)
+        
+        msg_input.submit(
+            handle_message,
+            inputs=[msg_input, chatbot],
+            outputs=[chatbot, msg_input]
+        )
+        
+        send_btn.click(
+            handle_message,
+            inputs=[msg_input, chatbot],
+            outputs=[chatbot, msg_input]
+        )
+        
+        switch_btn.click(
+            switch_equipment,
+            outputs=[equipment_selection, chat_interface, chatbot, status_display]
+        )
+        
+        refresh_debug_btn.click(
+            get_debug_info,
+            outputs=[debug_output]
+        )
+        
+        # Settings handlers
+        def update_logging(enabled):
+            config.enable_logging = enabled
+            return f"Logging {'enabled' if enabled else 'disabled'}"
+        
+        def update_groq(enabled):
+            config.use_groq = enabled
+            return f"Groq API {'enabled' if enabled else 'disabled'}"
+        
+        logging_checkbox.change(
+            update_logging,
+            inputs=[logging_checkbox],
+            outputs=[]
+        )
+        
+        groq_checkbox.change(
+            update_groq,
+            inputs=[groq_checkbox],
+            outputs=[]
+        )
+    
+    return demo
 
+# ——— Main Application ———
 if __name__ == "__main__":
-    main()
+    demo = create_interface()
+    demo.launch(
+        share=True,
+        server_name="0.0.0.0",
+        server_port=7860,
+        show_error=True
+    )
