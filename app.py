@@ -12,6 +12,10 @@ import re
 from groq import Groq
 from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark import Session
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 # ——— Configuration ———
